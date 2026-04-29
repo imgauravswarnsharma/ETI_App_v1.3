@@ -1,0 +1,22 @@
+# Untracked Apps Script Files
+node_modules/
+apps_script/.clasp.json  # optional if you don't want scriptId exposed
+.clasp.json
+
+# Untracked Files
+temp.txt
+clipboard*.*
+Untitled*
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# local notes
+notes/
+
+# Untracked Folders
+artifacts/
+docs/
+temp/
