@@ -58,7 +58,7 @@ Pipeline Standardization with centralized logger and scheduler for all pipeline 
 Latest Baseline clean restore snapshot
 
 **Why checkpoint created:**
-NA
+To preserve pre-change rollback state before pipeline standardization
 
 **Rollback:**
 git reset --hard checkpoint/v1.3/initialized-baseline-clasp-pull
@@ -91,8 +91,8 @@ apps_script/00_Project_Files.js
 apps_script/45_Pipelines.js
 
 
-**Problem:** NA
-**Decision:** NA
+**Problem:** Scheduler was not integrated with any pipeline except transaction pipeline.
+**Decision:** All pipelines standardized with controller,scheduler and logger integration.
 **Next:** NA
 
 
@@ -103,11 +103,30 @@ apps_script/45_Pipelines.js
 **Tag:** checkpoint/v1.3/post-pipeline-script-standardization
 
 **State at this point:**
-NA
+Backend Stable. Metadata Pipeline needs better logger integration and re-introduction of Scratchpad trigger and script is pending.
 
 **Why checkpoint created:**
 NA
 
 **Rollback:**
 git reset --hard checkpoint/v1.3/post-pipeline-script-standardization
+
+
+
+---
+
+
+---
+
+## 2026-04-29 19:42
+
+**Commit Message:** chore(infra): add push logging script with remote_push_log separation
+
+**Files Changed:**
+scripts/push_decision_log.ps1
+
+
+**Problem:** NA
+**Decision:** NA
+**Next:** NA
 
