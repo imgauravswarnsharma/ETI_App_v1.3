@@ -30,7 +30,7 @@ METADATA
 */
 
 function getMetadataSpreadsheet_(){
-  return getSpreadsheetByName_('ETI_App_v1.3_Metadata');
+  return getSpreadsheetByName_('ETI_App_v1.3_Metadata_DEV');
 }
 
 
@@ -41,7 +41,7 @@ SUPPORT
 */
 
 function getSupportSpreadsheet_(){
-  return getSpreadsheetByName_('ETI_App_v1.3_Support');
+  return getSpreadsheetByName_('ETI_App_v1.3_Support_DEV');
 }
 
 
@@ -52,5 +52,5 @@ LOGS
 */
 
 function getLogsSpreadsheet_(){
-  return getSpreadsheetByName_('ETI_App_v1.3_Logs');
+  return getSpreadsheetByName_('ETI_App_v1.3_Logs_DEV');
 }
