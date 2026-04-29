@@ -95,3 +95,19 @@ apps_script/45_Pipelines.js
 **Decision:** NA
 **Next:** NA
 
+
+---
+
+## 2026-04-29 18:51 — CHECKPOINT
+
+**Tag:** checkpoint/v1.3/post-pipeline-script-standardization
+
+**State at this point:**
+NA
+
+**Why checkpoint created:**
+NA
+
+**Rollback:**
+git reset --hard checkpoint/v1.3/post-pipeline-script-standardization
+
