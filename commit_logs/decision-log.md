@@ -35,3 +35,19 @@ scripts/commit_decision_log.ps1
 **Decision:** NA
 **Next:** NA
 
+
+---
+
+## 2026-04-29 12:49 — CHECKPOINT
+
+**Tag:** checkpoint/v1.3/initialized-baseline-clasp-pull
+
+**State at this point:**
+NA
+
+**Why checkpoint created:**
+NA
+
+**Rollback:**
+git reset --hard checkpoint/v1.3/initialized-baseline-clasp-pull
+
