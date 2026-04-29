@@ -31,9 +31,21 @@ scripts/checkpoint_decision_log.ps1
 scripts/commit_decision_log.ps1
 
 
-**Problem:** NA
-**Decision:** NA
-**Next:** NA
+**Problem:**
+Dev and live were interconnected. No version isolation existed.
+Any change in development risked breaking live users.
+
+**Decision:** 
+Created fresh repo from clasp pull. Established branch structure:
+master → v1.3/stable, v1.3/staging, v1.3/develop.
+All future work on v1.3/develop only.
+
+**State note:**
+v1.3/stable at this point = baseline reference only. App is currently broken.
+v1.3/stable will only become true stable after Phase 3 complete.
+
+**Next:**
+Pipeline Standardization with centralized logger and scheduler for all pipeline functions. Transaction pipeline is gold standard to replicate currently
 
 
 ---
@@ -43,11 +55,27 @@ scripts/commit_decision_log.ps1
 **Tag:** checkpoint/v1.3/initialized-baseline-clasp-pull
 
 **State at this point:**
-NA
+Latest Baseline clean restore snapshot
 
 **Why checkpoint created:**
 NA
 
 **Rollback:**
 git reset --hard checkpoint/v1.3/initialized-baseline-clasp-pull
+
+
+---
+
+## 2026-04-29 13:40 — CHECKPOINT
+
+**Tag:** checkpoint/v1.3/pre-pipeline-script-standardization
+
+**State at this point:**
+NA
+
+**Why checkpoint created:**
+NA
+
+**Rollback:**
+git reset --hard checkpoint/v1.3/pre-pipeline-script-standardization
 
