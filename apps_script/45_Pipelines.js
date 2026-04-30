@@ -1,36 +1,156 @@
 /**
- * =========================================================
- * PIPELINE: STANDARDIZED EXECUTION LAYER
- * =========================================================
- *
- * LAYER:
- * - Execution Orchestration Layer
- *
- * PURPOSE:
- * - Execute ordered sequence of functions
- * - Maintain checkpoint-based resumable execution
- *
- * DESIGN RULES:
- * ✔ Sequential execution
- * ✔ Checkpoint before each step
- * ✔ Scheduler-compatible
- * ✔ Idempotent step execution
- * ✔ If context already exists → DO NOT reinitialize
- * ✔ Only enhance (pipeline_name + run_context)
- *
- * =========================================================
- */
+   * =========================================================
+   * SCRIPT: PIPELINE ORCHESTRATION ENGINE
+   * =========================================================
+   *
+   * Layer:
+   * - Execution Orchestration Layer (Pipelines)
+   *
+   * Purpose:
+   * - Execute a sequence of functions in a controlled, ordered manner
+   * - Enable grouped execution of related processes
+   * - Support resume-aware execution using execution context
+   *
+   * System Role:
+   * - Sits between Controller and individual script functions
+   * - Orchestrates multiple functions as a single execution unit
+   * - Works with Scheduler for continuation handling
+   *
+   * Core Responsibilities:
+   * - Define ordered execution steps (function arrays)
+   * - Execute functions sequentially
+   * - Maintain execution pointer for resume
+   * - Persist execution state between steps
+   * - Handle controlled exit for scheduler continuation
+   *
+   * Input Dependencies:
+   * - Execution Context Layer:
+   *   - getExecutionContext_
+   *   - getOrInitExecutionContext_
+   *   - saveExecutionContext_
+   * - Scheduler Layer:
+   *   - exitAndScheduleContinuation_
+   * - Logger Layer:
+   *   - ETI_log_
+   *   - flushLogs_
+   *
+   * Output Targets:
+   * - Execution Context (step pointer, pipeline_name)
+   * - Logger (pipeline-level logs)
+   *
+   *
+   * =========================================================
+   * EXECUTION FLOW
+   * =========================================================
+   *
+   * 1. Pipeline function invoked by Controller
+   *
+   * 2. Execution context initialized (if not present)
+   *
+   * 3. Pipeline metadata setup:
+   *    - ctx.pipeline_name = current pipeline
+   *    - ctx.run_context = PIPELINE
+   *
+   * 4. Define execution steps:
+   *    - Array of functions (ordered execution)
+   *
+   * 5. Resume handling:
+   *    - Determine start index using ctx.function_index
+   *
+   * 6. Loop execution:
+   *    For each step:
+   *    a. Update context pointer:
+   *       - function_index
+   *       - function_name
+   *    b. Persist context (saveExecutionContext_)
+   *    c. Execute function
+   *
+   * 7. Controlled exit handling:
+   *    - If function returns 'EXIT' → stop execution
+   *    - If ctx.incomplete_step === true → stop execution
+   *
+   * 8. Continue execution:
+   *    - Move to next function until all steps completed
+   *
+   * 9. Pipeline completion:
+   *    - Log completion
+   *    - Clear execution pointer
+   *
+   * 10. Final flush:
+   *    - flushLogs_() executed in finally block
+   *
+   *
+   * =========================================================
+   * ALGORITHM (ACTUAL IMPLEMENTATION LOGIC)
+   * =========================================================
+   *
+   * 1. Initialize execution context (if not already initialized)
+   *
+   * 2. Set pipeline-level metadata:
+   *    - pipeline_name
+   *    - run_context = PIPELINE
+   *
+   * 3. Define steps array:
+   *    - [fn1, fn2, fn3, ...]
+   *
+   * 4. Determine start index:
+   *    - startIndex = ctx.function_index || 0
+   *
+   * 5. Iterative execution:
+   *    For i = startIndex → steps.length:
+   *      a. Set:
+   *         ctx.function_index = i
+   *         ctx.function_name = steps[i].name
+   *      b. Persist context
+   *      c. Execute function
+   *
+   * 6. Exit conditions:
+   *    - If function returns 'EXIT' → return immediately
+   *    - If ctx.incomplete_step === true → return immediately
+   *
+   * 7. Completion handling:
+   *    - All steps executed successfully
+   *
+   * 8. Logging:
+   *    - Log pipeline start and completion
+   *
+   * 9. Cleanup:
+   *    - Context pointer may be reset downstream
+   *
+   *
+   * =========================================================
+   * DESIGN PRINCIPLES
+   * =========================================================
+   *
+   * - Deterministic execution order
+   * - Resume-safe execution (state-driven)
+   * - Non-blocking continuation (scheduler compatible)
+   * - Separation of orchestration and logic
+   * - Lightweight control layer (no business logic)
+   *
+   *
+   * =========================================================
+   * IDENTITY & SAFETY
+   * =========================================================
+   *
+   * - Does NOT initialize execution context independently
+   * - Only enriches context (pipeline_name, pointers)
+   * - Safe for partial execution and resume cycles
+   * - Prevents step re-execution via pointer tracking
+   * - Ensures idempotent pipeline progression
+   *
+   * =========================================================
+   * */
 
 
-/* =========================
-   Transaction Pipeline
-   ========================= */
+
+/* 
+=========================
+PIPELINE: Transactions
+========================= */
 function pipeline_transactions_(){
 
-  /*
-  -------------------------------------
-  EXECUTION CONTEXT
-  -------------------------------------*/
+  /* --- EXECUTION CONTEXT --- */
   const SCRIPT_NAME = 'Pipeline';
   const FUNCTION_NAME = 'pipeline_transactions_';
 
@@ -42,10 +162,7 @@ function pipeline_transactions_(){
 
   try {
 
-    /*
-    -------------------------------------
-    PIPELINE START LOG (ONLY IF FRESH RUN)
-    -------------------------------------*/
+    /* --- PIPELINE START LOG (ONLY IF FRESH RUN) --- */
     if (!ctx.is_resumed) {
       ETI_log_({
         scriptName: SCRIPT_NAME,
@@ -57,10 +174,7 @@ function pipeline_transactions_(){
       });
     }
 
-    /*
-    -------------------------------------
-    STEP DEFINITIONS (ORDERED EXECUTION)
-    -------------------------------------*/
+    /* --- STEP DEFINITIONS (ORDERED EXECUTION) --- */
     const steps = [
       backfillTxnIDs_TransactionRaw,
       cleanupInvalidTransactions_TransactionRaw
@@ -68,51 +182,30 @@ function pipeline_transactions_(){
 
     const startIndex = ctx?.function_index || 0;
 
-    /*
-    -------------------------------------
-    MAIN EXECUTION LOOP (RESUME-AWARE)
-    -------------------------------------*/
+    /* --- MAIN EXECUTION LOOP (RESUME-AWARE) --- */
     for (let i = startIndex; i < steps.length; i++){
 
       const fn = steps[i];
 
-      /*
-      -------------------------------------
-      SAVE RESUME POINTER (CRITICAL)
-      -------------------------------------*/
+      /* --- SAVE RESUME POINTER (CRITICAL) --- */
       ctx.function_index = i;
       ctx.function_name = fn.name;
       saveExecutionContext_();
 
-      /*
-      -------------------------------------
-      EXECUTE STEP FUNCTION
-      -------------------------------------*/
+      /* --- EXECUTE STEP FUNCTION --- */
       const result = fn();
 
-      /*
-      -------------------------------------
-      EXIT HANDLING (SCHEDULER)
-      -------------------------------------*/
+      /* --- EXIT HANDLING (SCHEDULER) --- */
       if (result === 'EXIT') return;
 
-      /*
-      -------------------------------------
-      INCOMPLETE STEP (TIMEOUT CASE)
-      -------------------------------------*/
+      /* --- INCOMPLETE STEP (TIMEOUT CASE) --- */
       if (ctx?.incomplete_step) return;
     }
 
-    /*
-    -------------------------------------
-    PIPELINE COMPLETION METRICS
-    -------------------------------------*/
+    /* --- PIPELINE COMPLETION METRICS --- */
     const durationMs = new Date().getTime() - t0.getTime();
 
-    /*
-    -------------------------------------
-    PIPELINE END LOG
-    -------------------------------------*/
+    /* --- PIPELINE END LOG --- */
     ETI_log_({
       scriptName: SCRIPT_NAME,
       functionName: FUNCTION_NAME,
@@ -124,34 +217,24 @@ function pipeline_transactions_(){
 
   } catch (err) {
 
-    /*
-    -------------------------------------
-    ERROR LOGGING
-    -------------------------------------*/
+    /* --- ERROR LOGGING --- */
     ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, err, 'PIPELINE');
-
     throw err;
 
   } finally {
-
-    /*
-    -------------------------------------
-    FINAL LOG FLUSH (MANDATORY)
-    -------------------------------------*/
+    /* --- FINAL LOG FLUSH --- */
     flushLogs_();
   }
 }
 
 
-/* =========================
-   Item Pipeline
-   ========================= */
+/* 
+=========================
+PIPELINE: Items
+========================= */
 function pipeline_items_(){
 
-  /*
-  -------------------------------------
-  EXECUTION CONTEXT
-  -------------------------------------*/
+  /* --- EXECUTION CONTEXT --- */
   const SCRIPT_NAME = 'Pipeline';
   const FUNCTION_NAME = 'pipeline_items_';
 
@@ -163,10 +246,7 @@ function pipeline_items_(){
 
   try {
 
-    /*
-    -------------------------------------
-    PIPELINE START LOG (ONLY IF FRESH RUN)
-    -------------------------------------*/
+    /* --- PIPELINE START LOG (ONLY IF FRESH RUN) --- */
     if (!ctx.is_resumed) {
       ETI_log_({
         scriptName: SCRIPT_NAME,
@@ -178,10 +258,7 @@ function pipeline_items_(){
       });
     }
 
-    /*
-    -------------------------------------
-    STEP DEFINITIONS (ORDERED EXECUTION)
-    -------------------------------------*/
+    /* --- STEP DEFINITIONS (ORDERED EXECUTION) --- */
     const steps = [
       populateStagingLookupItems_FromTransactionResolution,
       processStagingItems_StateMachine,
@@ -192,51 +269,30 @@ function pipeline_items_(){
 
     const startIndex = ctx?.function_index || 0;
 
-    /*
-    -------------------------------------
-    MAIN EXECUTION LOOP (RESUME-AWARE)
-    -------------------------------------*/
+    /* --- MAIN EXECUTION LOOP (RESUME-AWARE) --- */
     for (let i = startIndex; i < steps.length; i++){
 
       const fn = steps[i];
 
-      /*
-      -------------------------------------
-      SAVE RESUME POINTER (CRITICAL)
-      -------------------------------------*/
+      /* --- SAVE RESUME POINTER (CRITICAL) --- */
       ctx.function_index = i;
       ctx.function_name = fn.name;
       saveExecutionContext_();
 
-      /*
-      -------------------------------------
-      EXECUTE STEP FUNCTION
-      -------------------------------------*/
+      /* --- EXECUTE STEP FUNCTION --- */
       const result = fn();
 
-      /*
-      -------------------------------------
-      EXIT HANDLING (SCHEDULER)
-      -------------------------------------*/
+      /* --- EXIT HANDLING (SCHEDULER) --- */
       if (result === 'EXIT') return;
 
-      /*
-      -------------------------------------
-      INCOMPLETE STEP (TIMEOUT CASE)
-      -------------------------------------*/
+      /* --- INCOMPLETE STEP (TIMEOUT CASE) --- */
       if (ctx?.incomplete_step) return;
     }
 
-    /*
-    -------------------------------------
-    PIPELINE COMPLETION METRICS
-    -------------------------------------*/
+    /* --- PIPELINE COMPLETION METRICS --- */
     const durationMs = new Date().getTime() - t0.getTime();
 
-    /*
-    -------------------------------------
-    PIPELINE END LOG
-    -------------------------------------*/
+    /* --- PIPELINE END LOG --- */
     ETI_log_({
       scriptName: SCRIPT_NAME,
       functionName: FUNCTION_NAME,
@@ -248,32 +304,23 @@ function pipeline_items_(){
 
   } catch (err) {
 
-    /*
-    -------------------------------------
-    ERROR LOGGING
-    -------------------------------------*/
+    /* --- ERROR LOGGING --- */
     ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, err, 'PIPELINE');
-
     throw err;
 
   } finally {
-
-    /*
-    -------------------------------------
-    FINAL LOG FLUSH (MANDATORY)
-    -------------------------------------*/
+    /* --- FINAL LOG FLUSH --- */
     flushLogs_();
   }
 }
+
+
 /* =========================
-   Brand Pipeline
+   PIPELINE: Brands
    ========================= */
 function pipeline_brands_(){
 
-  /*
-  -------------------------------------
-  EXECUTION CONTEXT
-  -------------------------------------*/
+  /* --- EXECUTION CONTEXT --- */
   const SCRIPT_NAME = 'Pipeline';
   const FUNCTION_NAME = 'pipeline_brands_';
 
@@ -285,10 +332,7 @@ function pipeline_brands_(){
 
   try {
 
-    /*
-    -------------------------------------
-    PIPELINE START LOG (ONLY IF FRESH RUN)
-    -------------------------------------*/
+    /* --- PIPELINE START LOG (ONLY IF FRESH RUN) --- */
     if (!ctx.is_resumed) {
       ETI_log_({
         scriptName: SCRIPT_NAME,
@@ -300,10 +344,7 @@ function pipeline_brands_(){
       });
     }
 
-    /*
-    -------------------------------------
-    STEP DEFINITIONS (ORDERED EXECUTION)
-    -------------------------------------*/
+    /* --- STEP DEFINITIONS (ORDERED EXECUTION) --- */
     const steps = [
       populateStagingLookupBrands_FromTransactionResolution,
       processStagingBrands_StateMachine,
@@ -314,51 +355,30 @@ function pipeline_brands_(){
 
     const startIndex = ctx?.function_index || 0;
 
-    /*
-    -------------------------------------
-    MAIN EXECUTION LOOP (RESUME-AWARE)
-    -------------------------------------*/
+    /* --- MAIN EXECUTION LOOP (RESUME-AWARE) --- */
     for (let i = startIndex; i < steps.length; i++){
 
       const fn = steps[i];
 
-      /*
-      -------------------------------------
-      SAVE RESUME POINTER (CRITICAL)
-      -------------------------------------*/
+      /* --- SAVE RESUME POINTER (CRITICAL) --- */
       ctx.function_index = i;
       ctx.function_name = fn.name;
       saveExecutionContext_();
 
-      /*
-      -------------------------------------
-      EXECUTE STEP FUNCTION
-      -------------------------------------*/
+      /* --- EXECUTE STEP FUNCTION --- */
       const result = fn();
 
-      /*
-      -------------------------------------
-      EXIT HANDLING (SCHEDULER)
-      -------------------------------------*/
+      /* --- EXIT HANDLING (SCHEDULER) --- */
       if (result === 'EXIT') return;
 
-      /*
-      -------------------------------------
-      INCOMPLETE STEP (TIMEOUT CASE)
-      -------------------------------------*/
+      /* --- INCOMPLETE STEP (TIMEOUT CASE) --- */  
       if (ctx?.incomplete_step) return;
     }
 
-    /*
-    -------------------------------------
-    PIPELINE COMPLETION METRICS
-    -------------------------------------*/
+    /* --- PIPELINE COMPLETION METRICS --- */
     const durationMs = new Date().getTime() - t0.getTime();
 
-    /*
-    -------------------------------------
-    PIPELINE END LOG
-    -------------------------------------*/
+    /* --- PIPELINE END LOG --- */
     ETI_log_({
       scriptName: SCRIPT_NAME,
       functionName: FUNCTION_NAME,
@@ -370,34 +390,25 @@ function pipeline_brands_(){
 
   } catch (err) {
 
-    /*
-    -------------------------------------
-    ERROR LOGGING
-    -------------------------------------*/
+    /* --- ERROR LOGGING --- */
     ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, err, 'PIPELINE');
 
     throw err;
 
   } finally {
 
-    /*
-    -------------------------------------
-    FINAL LOG FLUSH (MANDATORY)
-    -------------------------------------*/
+    /* --- FINAL LOG FLUSH --- */
     flushLogs_();
   }
 }
 
 
 /* =========================
-   Product Pipeline
+   PIPELINE: Products
    ========================= */
 function pipeline_products_(){
 
-  /*
-  -------------------------------------
-  EXECUTION CONTEXT
-  -------------------------------------*/
+  /* --- EXECUTION CONTEXT --- */
   const SCRIPT_NAME = 'Pipeline';
   const FUNCTION_NAME = 'pipeline_products_';
 
@@ -409,10 +420,7 @@ function pipeline_products_(){
 
   try {
 
-    /*
-    -------------------------------------
-    PIPELINE START LOG (ONLY IF FRESH RUN)
-    -------------------------------------*/
+    /* --- PIPELINE START LOG (ONLY IF FRESH RUN) --- */
     if (!ctx.is_resumed) {
       ETI_log_({
         scriptName: SCRIPT_NAME,
@@ -424,10 +432,7 @@ function pipeline_products_(){
       });
     }
 
-    /*
-    -------------------------------------
-    STEP DEFINITIONS (ORDERED EXECUTION)
-    -------------------------------------*/
+    /* --- STEP DEFINITIONS (ORDERED EXECUTION) --- */
     const steps = [
       populateStagingLookupProducts_FromTransactionResolution,
       processStagingProducts_StateMachine,
@@ -438,51 +443,30 @@ function pipeline_products_(){
 
     const startIndex = ctx?.function_index || 0;
 
-    /*
-    -------------------------------------
-    MAIN EXECUTION LOOP (RESUME-AWARE)
-    -------------------------------------*/
+    /* --- MAIN EXECUTION LOOP (RESUME-AWARE) --- */
     for (let i = startIndex; i < steps.length; i++){
 
       const fn = steps[i];
 
-      /*
-      -------------------------------------
-      SAVE RESUME POINTER (CRITICAL)
-      -------------------------------------*/
+      /* --- SAVE RESUME POINTER (CRITICAL) --- */
       ctx.function_index = i;
       ctx.function_name = fn.name;
       saveExecutionContext_();
 
-      /*
-      -------------------------------------
-      EXECUTE STEP FUNCTION
-      -------------------------------------*/
+      /* --- EXECUTE STEP FUNCTION --- */
       const result = fn();
 
-      /*
-      -------------------------------------
-      EXIT HANDLING (SCHEDULER)
-      -------------------------------------*/
+      /* --- EXIT HANDLING (SCHEDULER) --- */
       if (result === 'EXIT') return;
 
-      /*
-      -------------------------------------
-      INCOMPLETE STEP (TIMEOUT CASE)
-      -------------------------------------*/
+      /* --- INCOMPLETE STEP (TIMEOUT CASE) --- */
       if (ctx?.incomplete_step) return;
     }
 
-    /*
-    -------------------------------------
-    PIPELINE COMPLETION METRICS
-    -------------------------------------*/
+    /* --- PIPELINE COMPLETION METRICS --- */
     const durationMs = new Date().getTime() - t0.getTime();
 
-    /*
-    -------------------------------------
-    PIPELINE END LOG
-    -------------------------------------*/
+    /* --- PIPELINE END LOG --- */
     ETI_log_({
       scriptName: SCRIPT_NAME,
       functionName: FUNCTION_NAME,
@@ -494,33 +478,24 @@ function pipeline_products_(){
 
   } catch (err) {
 
-    /*
-    -------------------------------------
-    ERROR LOGGING
-    -------------------------------------*/
+    /* --- ERROR LOGGING --- */
     ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, err, 'PIPELINE');
 
     throw err;
 
   } finally {
 
-    /*
-    -------------------------------------
-    FINAL LOG FLUSH (MANDATORY)
-    -------------------------------------*/
+    /* --- FINAL LOG FLUSH --- */
     flushLogs_();
   }
 }
 
-/* =========================
-   Item-Brand Mapping Pipeline
-   ========================= */
+/* ===============================
+   PIPELINE: Items-Brands Mapping
+   =============================== */
 function pipeline_item_brand_mapping_(){
 
-  /*
-  -------------------------------------
-  EXECUTION CONTEXT
-  -------------------------------------*/
+  /* --- EXECUTION CONTEXT --- */
   const SCRIPT_NAME = 'Pipeline';
   const FUNCTION_NAME = 'pipeline_item_brand_mapping_';
 
@@ -532,10 +507,7 @@ function pipeline_item_brand_mapping_(){
 
   try {
 
-    /*
-    -------------------------------------
-    PIPELINE START LOG (ONLY IF FRESH RUN)
-    -------------------------------------*/
+    /* --- PIPELINE START LOG (ONLY IF FRESH RUN) --- */
     if (!ctx.is_resumed) {
       ETI_log_({
         scriptName: SCRIPT_NAME,
@@ -547,10 +519,7 @@ function pipeline_item_brand_mapping_(){
       });
     }
 
-    /*
-    -------------------------------------
-    STEP DEFINITIONS (ORDERED EXECUTION)
-    -------------------------------------*/
+    /* --- STEP DEFINITIONS (ORDERED EXECUTION) --- */
     const steps = [
       populateMapping_Item_Brand_FromTransactionResolution,
       processMapping_Item_Brand_StateMachine,
@@ -559,51 +528,33 @@ function pipeline_item_brand_mapping_(){
 
     const startIndex = ctx?.function_index || 0;
 
-    /*
-    -------------------------------------
-    MAIN EXECUTION LOOP (RESUME-AWARE)
-    -------------------------------------*/
+    /* --- MAIN EXECUTION LOOP (RESUME-AWARE) --- */
     for (let i = startIndex; i < steps.length; i++){
 
       const fn = steps[i];
 
-      /*
-      -------------------------------------
-      SAVE RESUME POINTER (CRITICAL)
-      -------------------------------------*/
+        /*
+        -------------------------------------
+        SAVE RESUME POINTER (CRITICAL)
+        -------------------------------------*/
       ctx.function_index = i;
       ctx.function_name = fn.name;
       saveExecutionContext_();
 
-      /*
-      -------------------------------------
-      EXECUTE STEP FUNCTION
-      -------------------------------------*/
+      /* --- EXECUTE STEP FUNCTION --- */
       const result = fn();
 
-      /*
-      -------------------------------------
-      EXIT HANDLING (SCHEDULER)
-      -------------------------------------*/
+      /* --- EXIT HANDLING (SCHEDULER) --- */
       if (result === 'EXIT') return;
 
-      /*
-      -------------------------------------
-      INCOMPLETE STEP (TIMEOUT CASE)
-      -------------------------------------*/
+      /* --- INCOMPLETE STEP (TIMEOUT CASE) --- */
       if (ctx?.incomplete_step) return;
     }
 
-    /*
-    -------------------------------------
-    PIPELINE COMPLETION METRICS
-    -------------------------------------*/
+    /* --- PIPELINE COMPLETION METRICS --- */
     const durationMs = new Date().getTime() - t0.getTime();
 
-    /*
-    -------------------------------------
-    PIPELINE END LOG
-    -------------------------------------*/
+    /* --- PIPELINE END LOG --- */
     ETI_log_({
       scriptName: SCRIPT_NAME,
       functionName: FUNCTION_NAME,
@@ -615,34 +566,25 @@ function pipeline_item_brand_mapping_(){
 
   } catch (err) {
 
-    /*
-    -------------------------------------
-    ERROR LOGGING
-    -------------------------------------*/
+    /* --- ERROR LOGGING --- */
     ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, err, 'PIPELINE');
 
     throw err;
 
   } finally {
 
-    /*
-    -------------------------------------
-    FINAL LOG FLUSH (MANDATORY)
-    -------------------------------------*/
+    /* --- FINAL LOG FLUSH --- */
     flushLogs_();
   }
 }
 
 
-/* =========================
-   Item-Brand-Product Mapping Pipeline
-   ========================= */
+/* ========================================
+   PIPELINE: Items-Brands-Products Mapping
+   ======================================== */
 function pipeline_item_brand_product_mapping_(){
 
-  /*
-  -------------------------------------
-  EXECUTION CONTEXT
-  -------------------------------------*/
+  /* --- EXECUTION CONTEXT --- */
   const SCRIPT_NAME = 'Pipeline';
   const FUNCTION_NAME = 'pipeline_item_brand_product_mapping_';
 
@@ -654,10 +596,7 @@ function pipeline_item_brand_product_mapping_(){
 
   try {
 
-    /*
-    -------------------------------------
-    PIPELINE START LOG (ONLY IF FRESH RUN)
-    -------------------------------------*/
+    /* --- PIPELINE START LOG (ONLY IF FRESH RUN) --- */
     if (!ctx.is_resumed) {
       ETI_log_({
         scriptName: SCRIPT_NAME,
@@ -669,10 +608,7 @@ function pipeline_item_brand_product_mapping_(){
       });
     }
 
-    /*
-    -------------------------------------
-    STEP DEFINITIONS (ORDERED EXECUTION)
-    -------------------------------------*/
+    /* --- STEP DEFINITIONS (ORDERED EXECUTION) --- */
     const steps = [
       populateMapping_Item_Brand_Product_FromTransactionResolution,
       processMapping_Item_Brand_Product_StateMachine,
@@ -681,51 +617,30 @@ function pipeline_item_brand_product_mapping_(){
 
     const startIndex = ctx?.function_index || 0;
 
-    /*
-    -------------------------------------
-    MAIN EXECUTION LOOP (RESUME-AWARE)
-    -------------------------------------*/
+    /* --- MAIN EXECUTION LOOP (RESUME-AWARE) --- */
     for (let i = startIndex; i < steps.length; i++){
 
       const fn = steps[i];
 
-      /*
-      -------------------------------------
-      SAVE RESUME POINTER (CRITICAL)
-      -------------------------------------*/
+      /* --- SAVE RESUME POINTER (CRITICAL) --- */
       ctx.function_index = i;
       ctx.function_name = fn.name;
       saveExecutionContext_();
 
-      /*
-      -------------------------------------
-      EXECUTE STEP FUNCTION
-      -------------------------------------*/
+      /* --- EXECUTE STEP FUNCTION --- */
       const result = fn();
 
-      /*
-      -------------------------------------
-      EXIT HANDLING (SCHEDULER)
-      -------------------------------------*/
+      /* --- EXIT HANDLING (SCHEDULER) --- */
       if (result === 'EXIT') return;
 
-      /*
-      -------------------------------------
-      INCOMPLETE STEP (TIMEOUT CASE)
-      -------------------------------------*/
+      /* --- INCOMPLETE STEP (TIMEOUT CASE) --- */
       if (ctx?.incomplete_step) return;
     }
 
-    /*
-    -------------------------------------
-    PIPELINE COMPLETION METRICS
-    -------------------------------------*/
+    /* --- PIPELINE COMPLETION METRICS --- */
     const durationMs = new Date().getTime() - t0.getTime();
 
-    /*
-    -------------------------------------
-    PIPELINE END LOG
-    -------------------------------------*/
+    /* --- PIPELINE END LOG --- */
     ETI_log_({
       scriptName: SCRIPT_NAME,
       functionName: FUNCTION_NAME,
@@ -737,34 +652,25 @@ function pipeline_item_brand_product_mapping_(){
 
   } catch (err) {
 
-    /*
-    -------------------------------------
-    ERROR LOGGING
-    -------------------------------------*/
+    /* --- ERROR LOGGING --- */
     ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, err, 'PIPELINE');
 
     throw err;
 
   } finally {
 
-    /*
-    -------------------------------------
-    FINAL LOG FLUSH (MANDATORY)
-    -------------------------------------*/
+    /* --- FINAL LOG FLUSH --- */
     flushLogs_();
   }
 }
 
 
-/* =========================
-   Sheets Metadata Pipeline
-   ========================= */
+/* =============================
+   PIPELINE: Sheets Metadata
+   ============================= */
 function sheets_metadata_pipeline_(){
 
-  /*
-  -------------------------------------
-  EXECUTION CONTEXT
-  -------------------------------------*/
+  /* --- EXECUTION CONTEXT --- */
   const SCRIPT_NAME = 'Pipeline';
   const FUNCTION_NAME = 'sheets_metadata_pipeline_';
 
@@ -776,10 +682,7 @@ function sheets_metadata_pipeline_(){
 
   try {
 
-    /*
-    -------------------------------------
-    PIPELINE START LOG (ONLY IF FRESH RUN)
-    -------------------------------------*/
+    /* --- PIPELINE START LOG (ONLY IF FRESH RUN) --- */
     if (!ctx.is_resumed) {
       ETI_log_({
         scriptName: SCRIPT_NAME,
@@ -791,65 +694,40 @@ function sheets_metadata_pipeline_(){
       });
     }
 
-    /*
-    -------------------------------------
-    STEP DEFINITIONS (ORDERED EXECUTION)
-    -------------------------------------*/
+    /* --- STEP DEFINITIONS (ORDERED EXECUTION) --- */
     const steps = [
-      STEP3_exportSchemaSnapshot,
-      exportFormulaInventory_v2_manifest,
+      exportSchemaSnapshot,
+      exportFormulaInventory,
       classifyColumns_fromManifest,
-      generateDerivedColumnLogic,
-      // reconcile_access_control_metadata_
+      generateDerivedColumnLogic
     ];
 
     const startIndex = ctx?.function_index || 0;
 
-    /*
-    -------------------------------------
-    MAIN EXECUTION LOOP (RESUME-AWARE)
-    -------------------------------------*/
+    /* --- MAIN EXECUTION LOOP (RESUME-AWARE) --- */
     for (let i = startIndex; i < steps.length; i++){
 
       const fn = steps[i];
 
-      /*
-      -------------------------------------
-      SAVE RESUME POINTER (CRITICAL)
-      -------------------------------------*/
+      /* --- SAVE RESUME POINTER (CRITICAL) --- */
       ctx.function_index = i;
       ctx.function_name = fn.name;
       saveExecutionContext_();
 
-      /*
-      -------------------------------------
-      EXECUTE STEP FUNCTION
-      -------------------------------------*/
+      /* --- EXECUTE STEP FUNCTION --- */
       const result = fn();
 
-      /*
-      -------------------------------------
-      EXIT HANDLING (SCHEDULER)
-      -------------------------------------*/
+      /* --- EXIT HANDLING (SCHEDULER) --- */
       if (result === 'EXIT') return;
 
-      /*
-      -------------------------------------
-      INCOMPLETE STEP (TIMEOUT CASE)
-      -------------------------------------*/
+      /* --- INCOMPLETE STEP (TIMEOUT CASE) --- */
       if (ctx?.incomplete_step) return;
     }
 
-    /*
-    -------------------------------------
-    PIPELINE COMPLETION METRICS
-    -------------------------------------*/
+    /* --- PIPELINE COMPLETION METRICS --- */
     const durationMs = new Date().getTime() - t0.getTime();
 
-    /*
-    -------------------------------------
-    PIPELINE END LOG
-    -------------------------------------*/
+    /* --- PIPELINE END LOG --- */
     ETI_log_({
       scriptName: SCRIPT_NAME,
       functionName: FUNCTION_NAME,
@@ -861,33 +739,24 @@ function sheets_metadata_pipeline_(){
 
   } catch (err) {
 
-    /*
-    -------------------------------------
-    ERROR LOGGING
-    -------------------------------------*/
+    /* --- ERROR LOGGING --- */
     ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, err, 'PIPELINE');
 
     throw err;
 
   } finally {
 
-    /*
-    -------------------------------------
-    FINAL LOG FLUSH (MANDATORY)
-    -------------------------------------*/
+    /* --- FINAL LOG FLUSH --- */
     flushLogs_();
   }
 }
 
-/* =========================
-   Scripts Metadata Pipeline
-   ========================= */
+/* =============================
+   PIPELINE: Scripts Metadata 
+   ============================= */
 function scripts_metadata_pipeline_(){
 
-  /*
-  -------------------------------------
-  EXECUTION CONTEXT
-  -------------------------------------*/
+ /* --- EXECUTION CONTEXT --- */ 
   const SCRIPT_NAME = 'Pipeline';
   const FUNCTION_NAME = 'scripts_metadata_pipeline_';
 
@@ -899,10 +768,7 @@ function scripts_metadata_pipeline_(){
 
   try {
 
-    /*
-    -------------------------------------
-    PIPELINE START LOG (ONLY IF FRESH RUN)
-    -------------------------------------*/
+    /* --- PIPELINE START LOG (ONLY IF FRESH RUN) --- */
     if (!ctx.is_resumed) {
       ETI_log_({
         scriptName: SCRIPT_NAME,
@@ -914,10 +780,7 @@ function scripts_metadata_pipeline_(){
       });
     }
 
-    /*
-    -------------------------------------
-    STEP DEFINITIONS (ORDERED EXECUTION)
-    -------------------------------------*/
+    /* --- STEP DEFINITIONS (ORDERED EXECUTION) --- */
     const steps = [
       extractScriptFunctionInventory_,
       generateScriptCallMap_RAW_,
@@ -935,51 +798,30 @@ function scripts_metadata_pipeline_(){
 
     const startIndex = ctx?.function_index || 0;
 
-    /*
-    -------------------------------------
-    MAIN EXECUTION LOOP (RESUME-AWARE)
-    -------------------------------------*/
+    /* --- MAIN EXECUTION LOOP (RESUME-AWARE) --- */
     for (let i = startIndex; i < steps.length; i++){
 
       const fn = steps[i];
 
-      /*
-      -------------------------------------
-      SAVE RESUME POINTER (CRITICAL)
-      -------------------------------------*/
+      /* --- SAVE RESUME POINTER (CRITICAL) --- */
       ctx.function_index = i;
       ctx.function_name = fn.name;
       saveExecutionContext_();
 
-      /*
-      -------------------------------------
-      EXECUTE STEP FUNCTION
-      -------------------------------------*/
+      /* --- EXECUTE STEP FUNCTION --- */
       const result = fn();
 
-      /*
-      -------------------------------------
-      EXIT HANDLING (SCHEDULER)
-      -------------------------------------*/
+      /* --- EXIT HANDLING (SCHEDULER) --- */
       if (result === 'EXIT') return;
 
-      /*
-      -------------------------------------
-      INCOMPLETE STEP (TIMEOUT CASE)
-      -------------------------------------*/
+      /* --- INCOMPLETE STEP (TIMEOUT CASE) --- */
       if (ctx?.incomplete_step) return;
     }
 
-    /*
-    -------------------------------------
-    PIPELINE COMPLETION METRICS
-    -------------------------------------*/
+    /* --- PIPELINE COMPLETION METRICS --- */
     const durationMs = new Date().getTime() - t0.getTime();
 
-    /*
-    -------------------------------------
-    PIPELINE END LOG
-    -------------------------------------*/
+    /* --- PIPELINE END LOG --- */
     ETI_log_({
       scriptName: SCRIPT_NAME,
       functionName: FUNCTION_NAME,
@@ -991,33 +833,24 @@ function scripts_metadata_pipeline_(){
 
   } catch (err) {
 
-    /*
-    -------------------------------------
-    ERROR LOGGING
-    -------------------------------------*/
+    /* --- ERROR LOGGING --- */
     ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, err, 'PIPELINE');
 
     throw err;
 
   } finally {
 
-    /*
-    -------------------------------------
-    FINAL LOG FLUSH (MANDATORY)
-    -------------------------------------*/
+      /* --- FINAL LOG FLUSH --- */
     flushLogs_();
   }
 }
 
 /* =========================
-   Full Metadata Pipeline
+   PIPELINE: Full Metadata
    ========================= */
 function full_metadata_pipeline_(){
 
-  /*
-  -------------------------------------
-  EXECUTION CONTEXT
-  -------------------------------------*/
+  /* --- EXECUTION CONTEXT --- */
   const SCRIPT_NAME = 'Pipeline';
   const FUNCTION_NAME = 'full_metadata_pipeline_';
 
@@ -1029,10 +862,7 @@ function full_metadata_pipeline_(){
 
   try {
 
-    /*
-    -------------------------------------
-    PIPELINE START LOG (ONLY IF FRESH RUN)
-    -------------------------------------*/
+    /* --- PIPELINE START LOG (ONLY IF FRESH RUN) --- */
     if (!ctx.is_resumed) {
       ETI_log_({
         scriptName: SCRIPT_NAME,
@@ -1044,10 +874,7 @@ function full_metadata_pipeline_(){
       });
     }
 
-    /*
-    -------------------------------------
-    STEP DEFINITIONS (PIPELINE COMPOSITION)
-    -------------------------------------*/
+    /* --- STEP DEFINITIONS (ORDERED EXECUTION) --- */
     const steps = [
       sheets_metadata_pipeline_,
       scripts_metadata_pipeline_
@@ -1055,51 +882,30 @@ function full_metadata_pipeline_(){
 
     const startIndex = ctx?.function_index || 0;
 
-    /*
-    -------------------------------------
-    MAIN EXECUTION LOOP (RESUME-AWARE)
-    -------------------------------------*/
+    /* --- MAIN EXECUTION LOOP (RESUME-AWARE) --- */
     for (let i = startIndex; i < steps.length; i++){
 
       const fn = steps[i];
 
-      /*
-      -------------------------------------
-      SAVE RESUME POINTER (CRITICAL)
-      -------------------------------------*/
+      /* --- SAVE RESUME POINTER (CRITICAL) --- */
       ctx.function_index = i;
       ctx.function_name = fn.name;
       saveExecutionContext_();
 
-      /*
-      -------------------------------------
-      EXECUTE SUB-PIPELINE
-      -------------------------------------*/
+      /* --- EXECUTE SUB-PIPELINE --- */
       const result = fn();
 
-      /*
-      -------------------------------------
-      EXIT HANDLING (SCHEDULER)
-      -------------------------------------*/
+      /* --- EXIT HANDLING (SCHEDULER) --- */
       if (result === 'EXIT') return;
 
-      /*
-      -------------------------------------
-      INCOMPLETE STEP (TIMEOUT CASE)
-      -------------------------------------*/
+      /* --- INCOMPLETE STEP (TIMEOUT CASE) --- */
       if (ctx?.incomplete_step) return;
     }
 
-    /*
-    -------------------------------------
-    PIPELINE COMPLETION METRICS
-    -------------------------------------*/
+    /* --- PIPELINE COMPLETION METRICS --- */
     const durationMs = new Date().getTime() - t0.getTime();
 
-    /*
-    -------------------------------------
-    PIPELINE END LOG
-    -------------------------------------*/
+    /* --- PIPELINE END LOG --- */
     ETI_log_({
       scriptName: SCRIPT_NAME,
       functionName: FUNCTION_NAME,
@@ -1111,27 +917,21 @@ function full_metadata_pipeline_(){
 
   } catch (err) {
 
-    /*
-    -------------------------------------
-    ERROR LOGGING
-    -------------------------------------*/
+    /* --- ERROR LOGGING --- */
     ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, err, 'PIPELINE');
 
     throw err;
 
   } finally {
 
-    /*
-    -------------------------------------
-    FINAL LOG FLUSH (MANDATORY)
-    -------------------------------------*/
+    /* --- FINAL LOG FLUSH --- */
     flushLogs_();
   }
 }
 
-/* =========================
-   Access Governance Pipeline
-   ========================= */
+/* ============================
+   PIPELINE: Access Governance
+   ============================ */
 function pipeline_access_mode_(){
 
   /*

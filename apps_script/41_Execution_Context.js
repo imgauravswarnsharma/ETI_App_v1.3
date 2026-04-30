@@ -6,58 +6,184 @@
  * Layer:
  * - Core Execution State Layer
  *
- * PURPOSE:
- * - Maintain execution state across system
- * - Provide initialization + access
- * - SINGLE SOURCE OF TRUTH for execution metadata
+ * Purpose:
+ * - Maintain execution state across the system
+ * - Provide a single source of truth for execution metadata
+ * - Enable persistence and restoration for scheduler-based continuation
  *
- * DESIGN RULES:
- * In-memory primary state with controlled persistence
- * Persistence handled via dedicated functions
+ * System Role:
+ * - Central state container shared across all layers
+ * - Used by:
+ *   - Controller (initialization)
+ *   - Scheduler (resume + continuation)
+ *   - Logger (read-only metadata enrichment)
+ *   - Pipelines / Scripts (read-only usage)
+ *
+ * Core Responsibilities:
+ * - Initialize execution context at entry points
+ * - Store execution metadata (execution_id, trigger_type, etc.)
+ * - Persist execution state for continuation
+ * - Restore execution state during scheduler resume
+ * - Provide access to current execution context
+ *
+ * Input Dependencies:
+ * - Apps Script Services:
+ *   - PropertiesService (state persistence)
+ * - Utility Functions:
+ *   - generateUUID_ (execution_id generation)
+ *
+ * Output Targets:
+ * - Script Properties (persistent execution state)
+ * - In-memory context (runtime access)
+ *
+ *
+ * =========================================================
+ * EXECUTION FLOW
+ * =========================================================
+ *
+ * 1. Execution entry (Controller / Manual run):
+ *    - initExecutionContext_() is invoked
+ *
+ * 2. Initialization:
+ *    - Generate execution_id
+ *    - Set trigger_type (CONTROLLER / MANUAL)
+ *    - Set run_context (default STANDALONE)
+ *    - Set started_at timestamp
+ *
+ * 3. Context propagation:
+ *    - Context stored in memory
+ *    - Accessible via getExecutionContext_()
+ *
+ * 4. Pipeline execution:
+ *    - Context is enriched (pipeline_name, run_context = PIPELINE)
+ *
+ * 5. During execution:
+ *    - Context is read (not modified) by:
+ *      • Logger
+ *      • Business scripts
+ *
+ * 6. Scheduler interaction:
+ *    - saveExecutionContext_() persists context before exit
+ *
+ * 7. Resume flow:
+ *    - restoreExecutionContext_() reloads context
+ *    - Execution continues using restored state
+ *
+ * 8. Execution completion:
+ *    - Context may be cleared or reset
+ *
+ *
+ * =========================================================
+ * ALGORITHM (ACTUAL IMPLEMENTATION LOGIC)
+ * =========================================================
+ *
+ * 1. Initialization:
+ *    - Create context object with:
+ *      • execution_id (UUID)
+ *      • trigger_type
+ *      • run_context
+ *      • started_at
+ *
+ * 2. Context Storage:
+ *    - Store context in global variable (runtime)
+ *    - Persist to PropertiesService when required
+ *
+ * 3. Context Access:
+ *    - getExecutionContext_() returns current context
+ *    - getOrInitExecutionContext_() ensures availability
+ *
+ * 4. Persistence:
+ *    - saveExecutionContext_() serializes context
+ *    - Writes to Script Properties
+ *
+ * 5. Restoration:
+ *    - restoreExecutionContext_() reads stored state
+ *    - Rehydrates runtime context object
+ *
+ * 6. Context Enrichment:
+ *    - Downstream layers update:
+ *      • pipeline_name
+ *      • function_name
+ *      • switch_name
+ *      • resume_count
+ *
+ * 7. Resume Handling:
+ *    - Maintain flags:
+ *      • is_resumed
+ *      • incomplete_step
+ *
+ * 8. Execution Integrity:
+ *    - Ensure single active context per execution
+ *    - Prevent re-initialization in lower layers
+ *
+ *
+ * =========================================================
+ * DESIGN PRINCIPLES
+ * =========================================================
+ *
+ * - Single source of truth for execution state
+ * - Context initialized only at entry points
+ * - Downstream layers enrich, not recreate
+ * - Persistence-first design for continuation safety
+ * - Lightweight and globally accessible
+ * - No business logic embedded
+ *
+ *
+ * =========================================================
+ * IDENTITY & SAFETY
+ * =========================================================
+ *
+ * - Only Controller (or entry layer) initializes context
+ * - Lower layers MUST NOT reinitialize context
+ * - Safe for resume-based execution cycles
+ * - Prevents state fragmentation across system
+ * - Ensures deterministic execution tracking
+ *
  * =========================================================
  */
 
 
 /*
--------------------------------------
-GLOBAL EXECUTION CONTEXT (SINGLETON)
--------------------------------------
-*/
+=========================================================
+MODULE: GLOBAL STATE
+=========================================================*/
 var EXECUTION_CONTEXT = null;
 
 
 /*
--------------------------------------
+=========================================================
+MODULE: INITIALIZATION
+=========================================================*/
+
+/* 
+-------------------------
 INIT EXECUTION CONTEXT
--------------------------------------
-*/
+-------------------------*/
 function initExecutionContext_(options = {}) {
 
   EXECUTION_CONTEXT = {
     execution_id: Utilities.getUuid(),
 
-    /* 
-    =========================
-     EXECUTION IDENTITY (ENTRY FILLS)
-    =========================*/
+    /* EXECUTION IDENTITY */
     pipeline_name: options.pipeline_name || null,
     function_name: options.function_name || null,
-    switch_name: options.switch_name || null,      // Controller
+    switch_name: options.switch_name || null,
 
     run_context: options.run_context || "STANDALONE",
     trigger_type: options.trigger_type || "MANUAL",
 
     started_at: new Date(),
 
-    is_resumed: false,                            // Scheduler
-    resume_count: 0,                              // Scheduler
-    incomplete_step: false,                       // Scheduler    
+    /* SCHEDULER STATE */
+    is_resumed: false,
+    resume_count: 0,
+    incomplete_step: false,
 
-    function_index: 0,                            // Pipeline
+    /* PIPELINE STATE */
+    function_index: 0,
 
-    last_flush_log_execution_id: null,            // Logger
-
-
+    /* LOGGER STATE */
+    last_flush_log_execution_id: null,
   };
 
   return EXECUTION_CONTEXT;
@@ -65,28 +191,29 @@ function initExecutionContext_(options = {}) {
 
 
 /*
--------------------------------------
+=========================================================
+MODULE: ACCESS & SAFE RETRIEVAL
+=========================================================*/
+
+/* 
+-----------------------
 GET EXECUTION CONTEXT
--------------------------------------
-*/
+-----------------------*/
 function getExecutionContext_(){
   return EXECUTION_CONTEXT;
 }
 
 
-
 /*
--------------------------------------
+---------------------------
 GET OR INIT (SAFE FALLBACK)
--------------------------------------
-*/
+---------------------------*/
 function getOrInitExecutionContext_(options = null){
 
   let ctx = getExecutionContext_();
 
   if (ctx) {
 
-    // Optional enrichment (only if provided)
     if (options){
       if (options.pipeline_name && !ctx.pipeline_name) {
         ctx.pipeline_name = options.pipeline_name;
@@ -110,20 +237,23 @@ function getOrInitExecutionContext_(options = null){
 
 
 /*
--------------------------------------
-INTERNAL STORAGE ACCESS (ABSTRACTION)
--------------------------------------
-*/
+=========================================================
+MODULE: PERSISTENCE LAYER
+=========================================================*/
+
+/*
+---------------
+STORAGE ACCESS 
+---------------*/
 function getExecutionContextStore_(){
   return PropertiesService.getScriptProperties();
 }
 
 
-/*
--------------------------------------
-SAVE EXECUTION CONTEXT (PERSIST)
--------------------------------------
-*/
+/* 
+-------------
+SAVE CONTEXT 
+-------------*/
 function saveExecutionContext_(){
 
   const ctx = getExecutionContext_();
@@ -148,30 +278,23 @@ function saveExecutionContext_(){
 }
 
 
-/*
--------------------------------------
-RESTORE EXECUTION CONTEXT (FROM STORE)
--------------------------------------
-*/
+/* 
+----------------
+RESTORE CONTEXT 
+----------------*/
 function restoreExecutionContext_(){
 
   try {
 
     const store = getExecutionContextStore_();
-
     const saved = store.getProperty('ETI_EXECUTION_CONTEXT');
 
     if (!saved) return false;
 
     const parsed = JSON.parse(saved);
-
     if (!parsed || !parsed.execution_id) return false;
 
-    /*
-    -------------------------------------
-    DEFAULT SAFETY (ENSURE FIELDS)
-    -------------------------------------
-    */
+    /* DEFAULT SAFETY */
     if (parsed.function_index === undefined) parsed.function_index = 0;
     if (parsed.incomplete_step === undefined) parsed.incomplete_step = false;
 
@@ -188,10 +311,15 @@ function restoreExecutionContext_(){
 
 
 /*
--------------------------------------
-CLEAR EXECUTION CONTEXT (POST COMPLETE)
--------------------------------------
+=========================================================
+MODULE: LIFECYCLE MANAGEMENT
+=========================================================
 */
+
+/*
+---------------
+ CLEAR CONTEXT 
+ --------------*/
 function clearExecutionContext_(){
 
   try {
@@ -207,11 +335,10 @@ function clearExecutionContext_(){
 }
 
 
-/*
--------------------------------------
-RESTORE OR INIT EXECUTION CONTEXT
--------------------------------------
-*/
+/* 
+----------------
+RESTORE OR INIT 
+----------------*/
 function restoreOrInitExecutionContext_(options = null){
 
   const restored = restoreExecutionContext_();

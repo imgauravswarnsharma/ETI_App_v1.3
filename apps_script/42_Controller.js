@@ -1,8 +1,171 @@
+/**
+ * =========================================================
+ * SCRIPT: EXECUTION CONTROLLER
+ * =========================================================
+ *
+ * Layer:
+ * - Execution Control Layer (Controller)
+ *
+ * Purpose:
+ * - Serve as the primary execution entry point
+ * - Route execution based on automation switches
+ * - Initialize execution context for all runs
+ * - Control lifecycle of function and pipeline execution
+ *
+ * System Role:
+ * - Entry layer for all triggered executions
+ * - Bridges UI / trigger events to backend execution
+ * - Coordinates with Scheduler for controlled continuation
+ * - Ensures consistent execution initialization and completion
+ *
+ * Core Responsibilities:
+ * - Read automation switches and determine execution target
+ * - Initialize execution context (trigger_type, switch_name)
+ * - Route execution to:
+ *   • Pipeline functions
+ *   • Standalone functions
+ * - Wrap execution inside controlled environment
+ * - Handle execution success / failure / exit states
+ * - Integrate with scheduler for continuation-based execution
+ *
+ * Input Dependencies:
+ * - Execution Context Layer:
+ *   - initExecutionContext_
+ *   - getExecutionContext_
+ *   - saveExecutionContext_
+ * - Scheduler Layer:
+ *   - exitAndScheduleContinuation_
+ *   - finalizeExecutionFromScheduler_
+ * - Logger Layer:
+ *   - ETI_log_
+ *   - flushLogs_
+ * - Switch System:
+ *   - getAutomationSwitchMap_
+ *
+ * Output Targets:
+ * - Execution Context (initialized + updated state)
+ * - Logger (execution lifecycle logs)
+ * - Scheduler (continuation control when required)
+ *
+ *
+ * =========================================================
+ * EXECUTION FLOW
+ * =========================================================
+ *
+ * 1. Trigger event occurs:
+ *    - Manual execution OR automation trigger (onChange / button)
+ *
+ * 2. Controller entry function executes:
+ *    - Reads automation switch map
+ *
+ * 3. Determine execution target:
+ *    - Identify active switch
+ *    - Map switch → function or pipeline
+ *
+ * 4. Initialize execution context:
+ *    - trigger_type = CONTROLLER / MANUAL
+ *    - switch_name = selected switch
+ *    - execution_id generated
+ *
+ * 5. Controlled execution wrapper:
+ *    - ETI_executeControlledFunction_(targetFunction)
+ *
+ * 6. Inside controlled execution:
+ *    a. Execute target function
+ *    b. Monitor for:
+ *       - timeout exit (scheduler)
+ *       - error conditions
+ *
+ * 7. If scheduler exit triggered:
+ *    - exitAndScheduleContinuation_ handles continuation
+ *    - controller stops execution
+ *
+ * 8. If execution completes:
+ *    - finalizeExecutionFromScheduler_ OR direct finalize
+ *
+ * 9. Finalization:
+ *    - Update execution state
+ *    - Log completion status
+ *    - Flush logs
+ *
+ *
+ * =========================================================
+ * ALGORITHM (ACTUAL IMPLEMENTATION LOGIC)
+ * =========================================================
+ *
+ * 1. Load switch map using getAutomationSwitchMap_
+ *
+ * 2. Identify active switch:
+ *    - Iterate switches
+ *    - Select enabled switch
+ *
+ * 3. Resolve execution target:
+ *    - Map switch → function name or pipeline
+ *    - Validate existence in global scope
+ *
+ * 4. Initialize execution context:
+ *    - Set:
+ *      • execution_id
+ *      • trigger_type
+ *      • switch_name
+ *      • run_context (default STANDALONE)
+ *
+ * 5. Controlled execution:
+ *    - Wrap target call inside try-catch
+ *    - Use ETI_executeControlledFunction_
+ *
+ * 6. Error handling:
+ *    - Capture error
+ *    - Log via ETI_logError_
+ *    - Propagate failure state
+ *
+ * 7. Scheduler interaction:
+ *    - If ctx.incomplete_step === true:
+ *      → exit (scheduler will resume)
+ *
+ * 8. Execution completion:
+ *    - Clear execution markers
+ *    - Finalize via finalizeExecutionFromScheduler_
+ *
+ * 9. Log flushing:
+ *    - Ensure flushLogs_ is called in finally block
+ *
+ *
+ * =========================================================
+ * DESIGN PRINCIPLES
+ * =========================================================
+ *
+ * - Single entry point for all executions
+ * - Switch-driven execution routing
+ * - Context-first execution initialization
+ * - Controlled execution wrapper (no direct calls)
+ * - Scheduler-compatible design (resume-safe)
+ * - Separation of concerns (controller does not contain business logic)
+ *
+ *
+ * =========================================================
+ * IDENTITY & SAFETY
+ * =========================================================
+ *
+ * - Only layer allowed to initialize execution context
+ * - Does NOT contain business logic
+ * - Safe for repeated trigger execution
+ * - Prevents uncontrolled execution paths
+ * - Ensures consistent execution lifecycle across system
+ *
+ * =========================================================
+ */
+
+
 /*
--------------------------------------
-Utility Function — Read Switch Table
--------------------------------------
-*/
+=========================================================
+MODULE: SWITCH READING & MAPPING
+=========================================================*/
+
+/*
+-------------------------
+READ AUTOMATION SWITCH MAP
+-------------------------*/
 function getAutomationSwitchMap_(){
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -36,30 +199,29 @@ function getAutomationSwitchMap_(){
 
 
 /*
--------------------------------------
-LOGGING MODE SWITCHES (SINGLE SOURCE)
--------------------------------------
-// ACTION LOG
-*/
+=========================================================
+MODULE: LOGGING MODE SWITCHES
+=========================================================*/
+
+/* ACTION LOG ENABLED */
 function isActionLogEnabled_(){
   const switches = getAutomationSwitchMap_();
   return switches["Enable_Action_Log"] === true;
 }
 
-
-// EXECUTION LOG
+/* EXECUTION LOG ENABLED */
 function isExecutionLogEnabled_(){
   const switches = getAutomationSwitchMap_();
   return switches["Enable_Execution_Log"] === true;
 }
 
-// CONSOLE LOG
+/* CONSOLE LOG ENABLED */
 function isConsoleLogEnabled_(){
   const switches = getAutomationSwitchMap_();
   return switches["Enable_Console_Log"] === true;
 }
 
-// DEBUG MODE
+/* DEBUG MODE ENABLED */
 function isDebugModeEnabled_(){
   const switches = getAutomationSwitchMap_();
   const mode = switches["Access_Mode"];
@@ -68,10 +230,14 @@ function isDebugModeEnabled_(){
 
 
 /*
--------------------------------------
-Utility — Get Execution Status
--------------------------------------
-*/
+=========================================================
+MODULE: EXECUTION STATE UTILITIES
+=========================================================*/
+
+/*
+-------------------------
+GET EXECUTION STATUS MAP
+-------------------------*/
 function getExecutionStatusMap_(){
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -95,10 +261,14 @@ function getExecutionStatusMap_(){
 
 
 /*
--------------------------------------
-Utility — Check Executable Switch
--------------------------------------
-*/
+=========================================================
+MODULE: SWITCH CONTROL UTILITIES
+=========================================================*/
+
+/* 
+------------------------
+CHECK EXECUTABLE SWITCH
+------------------------*/
 function isExecutableSwitch_(name){
 
   return (
@@ -110,10 +280,9 @@ function isExecutableSwitch_(name){
 
 
 /*
--------------------------------------
-Utility — Reset Switch
--------------------------------------
-*/
+-------------
+RESET SWITCH
+-------------*/
 function resetSwitch_(switchName){
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -130,11 +299,10 @@ function resetSwitch_(switchName){
 }
 
 
-/*
--------------------------------------
-Utility — Set Status
--------------------------------------
-*/
+/* 
+---------------------
+SET EXECUTION STATUS 
+---------------------*/
 function setExecutionStatus_(switchName, status){
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -151,11 +319,10 @@ function setExecutionStatus_(switchName, status){
 }
 
 
-/*
--------------------------------------
-Utility — Timestamp
--------------------------------------
-*/
+/* 
+------------------------
+SET EXECUTION TIMESTAMP 
+------------------------*/
 function setExecutionTimestamp_(switchName, timestamp){
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -172,11 +339,10 @@ function setExecutionTimestamp_(switchName, timestamp){
 }
 
 
-/*
--------------------------------------
-Utility — Duration
--------------------------------------
-*/
+/* 
+-----------------------
+SET EXECUTION DURATION 
+-----------------------*/
 function setExecutionDuration_(switchName, durationMs){
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -194,30 +360,9 @@ function setExecutionDuration_(switchName, durationMs){
 
 
 /*
--------------------------------------
-Helper — Format Duration
--------------------------------------
-*/
-function formatDuration_(ms){
-
-  const totalSeconds = Math.floor(ms / 1000);
-
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-
-  if(hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
-  if(minutes > 0) return `${minutes}m ${seconds}s`;
-
-  return `${seconds}s`;
-}
-
-
-/*
--------------------------------------
-Utility — Dashboard Execution Tracking: Message
--------------------------------------
-*/
+----------------
+SET LOG MESSAGE
+----------------*/
 function setLogMessage_(switchName, message){
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -235,20 +380,47 @@ function setLogMessage_(switchName, message){
 
 
 /*
--------------------------------------
-Controller (QUEUE ENABLED)
--------------------------------------
+=========================================================
+MODULE: HELPER UTILITIES
+=========================================================*/
+
+/* 
+----------------
+FORMAT DURATION 
+----------------*/
+function formatDuration_(ms){
+
+  const totalSeconds = Math.floor(ms / 1000);
+
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if(hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if(minutes > 0) return `${minutes}m ${seconds}s`;
+
+  return `${seconds}s`;
+}
+
+
+/*
+=========================================================
+MODULE: CONTROLLER ENGINE
+=========================================================
 */
+
+/*
+----------------------
+AUTOMATION CONTROLLER
+----------------------*/
 function automationController_onChange(e){
 
   const switches = getAutomationSwitchMap_();
   const statusMap = getExecutionStatusMap_();
 
-  /*
-  -------------------------------------
-  PHASE 1 — MARK WAITING (NO LOCK)
-  -------------------------------------
-  */
+
+
+  /* --- PHASE 1 — MARK WAITING (NO LOCK) --- */
   for(const name in switches){
 
     if(!isExecutableSwitch_(name)) continue;
@@ -264,24 +436,17 @@ function automationController_onChange(e){
     }
   }
 
-  /*
-  -------------------------------------
-  PHASE 2 — LOCK CONTROL
-  -------------------------------------
-  */
+
+  /* --- PHASE 2 — LOCK CONTROL --- */
   const lock = LockService.getScriptLock();
 
   if (!lock.tryLock(1000)) {
     return;
   }
 
-  try {
 
-    /*
-    -------------------------------------
-    PREVENT PARALLEL RUNNING
-    -------------------------------------
-    */
+  try {
+    /* --- PREVENT PARALLEL RUNNING --- */
     const updatedStatusMap = getExecutionStatusMap_();
 
     for(const key in updatedStatusMap){
@@ -290,11 +455,8 @@ function automationController_onChange(e){
       }
     }
 
-    /*
-    -------------------------------------
-    FUNCTION MAP
-    -------------------------------------
-    */
+
+    /* --- FUNCTION MAP --- */
     const functionMap = {
 
       "Run_Transaction_Pipeline": pipeline_transactions_,
@@ -319,11 +481,8 @@ function automationController_onChange(e){
       "Run_Access_Mode_Pipeline": pipeline_access_mode_
     };
 
-    /*
-    -------------------------------------
-    LOOP — PROCESS QUEUE
-    -------------------------------------
-    */
+
+    /* --- LOOP — PROCESS QUEUE --- */
     const MAX_ITERATIONS = 20;
     let iteration = 0;
 
@@ -362,27 +521,18 @@ function automationController_onChange(e){
       try{
 
         ETI_executeControlledFunction_(nextSwitch, fn);
-        
-        /*-------------------------------------
-            CHECK IF SCHEDULER WILL CONTINUE
-        -------------------------------------*/
+
+
+        /* --- CHECK IF SCHEDULER WILL CONTINUE --- */
+
         if (getExecutionContext_()?.incomplete_step === true) {
 
-          /*
-          -------------------------------------
-          PAUSE STATE (SCHEDULER HANDOVER)
-          -------------------------------------
-          */
           setExecutionStatus_(nextSwitch, "RUNNING");
           setLogMessage_(nextSwitch, "Execution paused");
 
-          return;         // EXIT CONTROLLER LOOP
-
+          return;
         }
 
-        /*-------------------------------------
-            SUCCESS PATH (NON-SCHEDULER)
-         -------------------------------------*/
         const durationMs = new Date() - startTime;
 
         setExecutionDuration_(nextSwitch, durationMs);
@@ -402,70 +552,68 @@ function automationController_onChange(e){
         console.error(nextSwitch, err);
       }
 
-      // -------------------------------------
-      // ALWAYS RESET SWITCH AFTER FINAL STATE
-      // -------------------------------------
       resetSwitch_(nextSwitch);
-      }
+    }
 
-  }
-  finally{
+  } finally {
     lock.releaseLock();
   }
 }
 
 
 /*
--------------------------------------
-Execution Wrapper — Controller Layer
--------------------------------------
+=========================================================
+MODULE: EXECUTION WRAPPER
+=========================================================
 */
+
+/*
+-----------------------------
+CONTROLLED EXECUTION WRAPPER
+-----------------------------*/
 function ETI_executeControlledFunction_(switchName, fn){
   
   const functionName = fn.name || '';
 
-  /*
-  -------------------------------------
-  LOGGER EXECUTION CONTEXT INITIALIZER
-  -------------------------------------
-  */
   initExecutionContext_({
     run_context: 'STANDALONE',
     trigger_type: 'CONTROLLER',
     function_name: fn.name || null,
     switch_name: switchName
   });
-  
-    saveExecutionContext_();   // ensure persistence before execution
+
+  saveExecutionContext_();
 
   try {
-    fn(); // Execute Function
+    fn();
   } catch (err) {
 
-    /* -------------------------------------
-       CRITICAL: LOG ERROR TO LOGGER
-      ------------------------------------- */
     ETI_logError_(
       'Controller',
       functionName,
-      '',                  // no sheet
+      '',
       err,
       'CONTROLLED_EXECUTION'
     );
 
-    throw err;  // preserve original flow
+    throw err;
 
   } finally {
-    flushLogs_(); // Log Flush for Batch Writing (Critical)
+    flushLogs_();
   }
 }
 
 
 /*
--------------------------------------
-FINALIZE EXECUTION (CONTROLLER OWNED)
--------------------------------------
+=========================================================
+MODULE: SCHEDULER FINALIZATION
+=========================================================
 */
+
+/*
+-------------------
+FINALIZE EXECUTION
+-------------------*/
 function finalizeExecutionFromScheduler_(status = 'SUCCESS', message = ''){
 
   const ctx = getExecutionContext_();
@@ -478,11 +626,6 @@ function finalizeExecutionFromScheduler_(status = 'SUCCESS', message = ''){
 
     const durationMs = new Date() - new Date(ctx.started_at);
 
-    /*
-    -------------------------------------
-    APPLY FINAL STATE (FROM SCHEDULER)
-    -------------------------------------
-    */
     setExecutionDuration_(switchName, durationMs);
     setExecutionStatus_(switchName, status);
     setLogMessage_(switchName, message || status);
@@ -493,10 +636,5 @@ function finalizeExecutionFromScheduler_(status = 'SUCCESS', message = ''){
     console.error('finalizeExecutionFromScheduler_ failed', err);
   }
 
-  /*
-  -------------------------------------
-  CLEAR EXECUTION CONTEXT
-  -------------------------------------
-  */
   clearExecutionContext_();
 }

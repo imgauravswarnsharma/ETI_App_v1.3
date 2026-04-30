@@ -1,300 +1,145 @@
 /**
  * =========================================================
- * SYSTEM CONTEXT: ETI STRUCTURED LOGGER
+ * SCRIPT: ETI STRUCTURED LOGGER
  * =========================================================
  *
- * POSITION IN ARCHITECTURE:
- * ---------------------------------------------------------
- * Logger = Core Infrastructure Layer
- *
- * Used by:
- * - Controller (entry point)
- * - Pipelines (execution grouping)
- * - All scripts (business logic)
- *
- * It is the SINGLE SOURCE OF TRUTH for:
- * - Debug logging
- * - Action logging (persistent audit)
- * - Execution context propagation
- *
- *
- * =========================================================
- * 1. CORE COMPONENTS
- * =========================================================
- *
- * 1. EXECUTION CONTEXT (GLOBAL STATE)
- * ---------------------------------------------------------
- * Defined via:
- *   initExecutionContext_()
- *   getExecutionContext_()
- *
- * Structure:
- * {
- *   execution_id   → unique UUID per run
- *   pipeline_name  → set at pipeline level
- *   run_context    → STANDALONE / PIPELINE
- *   trigger_type   → MANUAL / CONTROLLER
- *   started_at     → timestamp
- * }
- *
- * Behavior:
- * - Initialized ONLY at execution entry points
- *   (Controller OR manual pipeline/script)
- *
- * - Pipeline layer may MODIFY context (not recreate)
- *
- * - Logger READS context (never mutates it)
- *
- *
- * =========================================================
- * 2. LOGGING FLOW (END-TO-END)
- * =========================================================
- *
- * ENTRY POINTS:
- * ---------------------------------------------------------
- * A. Controller Execution
- *    → initExecutionContext_({ trigger_type: CONTROLLER })
- *
- * B. Manual Execution (Apps Script UI)
- *    → initExecutionContext_() OR implicit defaults
- *
- * C. Pipeline Execution
- *    → Enhances context:
- *       pipeline_name
- *       run_context = PIPELINE
- *
- *
- * LOGGING EXECUTION:
- * ---------------------------------------------------------
- * Step 1: Script calls ETI_log_(payload)
- *
- * Step 2: Logger builds:
- *   - Debug line (console)
- *   - Structured row (buffer)
- *
- * Step 3: Buffer accumulates logs
- *
- * Step 4: flushLogs_() writes to sheet (batch)
- *
- *
- * =========================================================
- * 3. LOG TYPES
- * =========================================================
- *
- * A. DEBUG LOG (REAL-TIME)
- * ---------------------------------------------------------
- * Output:
- *   Apps Script console
- *
- * Format:
- *   [Script - Function - Sheet] ACTION ⇒ Details
- *
- * Example:
- *   [Items - populate... - Staging_Lookup_Items] SUMMARY ⇒ Scanned=1999 | ...
+ * Layer:
+ * - Core Infrastructure Layer (Logging System)
  *
  * Purpose:
- * - Fast visual debugging
- * - Execution trace
+ * - Provide centralized logging across entire ETI system
+ * - Capture structured logs with execution context
+ * - Support both debug (console) and persistent (sheet) logging
  *
+ * System Role:
+ * - Single source of truth for logging
+ * - Consumed by:
+ *   - Controller (entry logging)
+ *   - Pipelines (execution grouping logs)
+ *   - All scripts (event emission only)
  *
- * B. ACTION LOG (PERSISTENT)
- * ---------------------------------------------------------
- * Output:
- *   Action_Logs sheet
+ * Core Responsibilities:
+ * - Format log messages (standardized structure)
+ * - Enrich logs using execution context
+ * - Buffer logs in memory for performance
+ * - Persist logs into Action_Logs and Execution_Logs
  *
- * Stored as structured rows
+ * Input Dependencies:
+ * - Execution Context Layer:
+ *   - getExecutionContext_
+ *   - getOrInitExecutionContext_
+ * - Automation Switch System:
+ *   - getAutomationSwitchMap_
+ * - Logs Spreadsheet:
+ *   - getLogsSpreadsheet_
  *
- * Includes:
- * - Execution metadata
- * - Debug message snapshot
- * - Error details
- *
- *
- * =========================================================
- * 4. ACTION LOG SCHEMA
- * =========================================================
- *
- * Columns:
- *
- * Timestamp
- * Level
- *
- * Trigger_Type
- * Run_Context
- *
- * Action
- * Debug_Message
- * Error_Message
- *
- * Execution_ID
- *
- * Pipeline_Name
- * Script_Name
- * Function_Name
- * Sheet_Name
- * Switch_Name
- *
- * Step_Name
- * Row_Number
- *
- * Details
- *
- *
- * Design Intent:
- * ---------------------------------------------------------
- * - Debug_Message = primary scan column
- * - Other columns = structured filtering / audit
+ * Output Targets:
+ * - Action_Logs sheet (all logs)
+ * - Execution_Logs sheet (non-row logs only)
  *
  *
  * =========================================================
- * 5. LOG FORMATTING SYSTEM
+ * EXECUTION FLOW
  * =========================================================
  *
- * Centralized via:
- *   buildLogComponents_()
+ * 1. Script invokes ETI_log_(payload)
  *
- * Sub-components:
+ * 2. Logger performs:
+ *    a. Payload normalization
+ *    b. Execution context retrieval
+ *    c. Switch evaluation (console / action / execution)
  *
- * 1. formatAction_
- *    → Converts ACTION_NAME → "ACTION NAME"
+ * 3. Log formatting:
+ *    a. formatAction_
+ *    b. formatStep_
+ *    c. sanitizeLogText_
+ *    d. buildLogComponents_
  *
- * 2. formatStep_
- *    → Converts STEP_NAME → "STEP NAME"
+ * 4. Console logging (if enabled)
  *
- * 3. sanitizeLogText_
- *    → Removes:
- *       - new lines
- *       - extra spaces
- *       - unsafe characters
+ * 5. Log classification:
+ *    - Row-level log (has rowNumber)
+ *    - Execution-level log (no rowNumber)
  *
- * 4. Header Builder:
- *    → [Script - Function - Sheet]
+ * 6. Buffer push:
+ *    - Append structured row to ETI_LOG_BUFFER
  *
+ * 7. Auto flush trigger:
+ *    - If buffer size ≥ ETI_LOG_FLUSH_SIZE → flushLogs_()
  *
- * RULE:
- * ---------------------------------------------------------
- * Logger controls:
- *   ✔ Structure
- *   ✔ Safety
- *
- * Script controls:
- *   ✔ Meaning
- *   ✔ Metrics
- *
- *
- * =========================================================
- * 6. BUFFERED WRITE SYSTEM
- * =========================================================
- *
- * Mechanism:
- * ---------------------------------------------------------
- * - Logs are NOT written immediately
- * - Stored in ETI_LOG_BUFFER
- * - Written in batch via flushLogs_()
- *
- * Benefits:
- * ---------------------------------------------------------
- * ✔ Performance optimized
- * ✔ Reduces API calls
- * ✔ Prevents partial writes
- *
- *
- * CRITICAL RULE:
- * ---------------------------------------------------------
- * flushLogs_() MUST be called:
- * - At pipeline end
- * - At controller wrapper end
- * - In finally blocks
+ * 8. flushLogs_ execution:
+ *    a. Validate switches
+ *    b. Initialize sheets (ensureLogSheet_)
+ *    c. Insert execution boundary separator (if needed)
+ *    d. Transform rows using header map
+ *    e. Write Action logs (all rows)
+ *    f. Write Execution logs (non-row only)
+ *    g. Clear buffer
  *
  *
  * =========================================================
- * 7. EXECUTION CONTEXT PROPAGATION
+ * ALGORITHM (ACTUAL IMPLEMENTATION LOGIC)
  * =========================================================
  *
- * FLOW:
+ * 1. Build ETI_LOG_SCHEMA → canonical column definition
  *
- * Controller
- *   ↓
- * initExecutionContext_
- *   ↓
- * Pipeline (enhances context)
- *   ↓
- * Script functions (read-only)
- *   ↓
- * Logger uses context
+ * 2. Build ETI_LOG_INDEX:
+ *    - Map column name → index (position agnostic access)
  *
+ * 3. Logger Switch Resolution:
+ *    - Build once via buildLoggerSwitchMap_
+ *    - Cache in LOGGER_SWITCHES
  *
- * RULES:
- * ---------------------------------------------------------
- * ✔ Only ENTRY POINT initializes context
- * ✔ Lower layers MUST NOT reinitialize
- * ✔ Context can only be ENRICHED downstream
+ * 4. Log Processing:
+ *    - Construct header: [Script - Function - Sheet]
+ *    - Normalize text (remove newlines, extra spaces)
+ *    - Generate final logLine
  *
+ * 5. Buffer System:
+ *    - Push structured array into ETI_LOG_BUFFER
+ *    - Maintain execution metadata inside row
  *
- * =========================================================
- * 8. ERROR HANDLING
- * =========================================================
+ * 6. Flush Mechanism:
+ *    - Initialize sheets if missing
+ *    - Ensure schema consistency (append missing columns)
+ *    - Map row → sheet structure using headerMap
  *
- * WRAPPER:
- *   ETI_logError_()
+ * 7. Execution Boundary Handling:
+ *    - Compare execution_id with last_flush_log_execution_id
+ *    - Insert separator row if new execution detected
  *
- * Captures:
- * - error.message → Details
- * - error.stack   → Error_Message
+ * 8. Classification Logic:
+ *    - Row logs → Action_Logs only
+ *    - Execution logs → Action_Logs + Execution_Logs
  *
+ * 9. Batch Write:
+ *    - Write all rows using setValues()
+ *    - Avoid per-row operations
  *
- * =========================================================
- * 9. STEP LOGGING (STANDARDIZED)
- * =========================================================
- *
- * Utilities:
- * - ETI_logStepStart_
- * - ETI_logStepEnd_
- *
- * Output:
- *   PROCESS ⇒ LOAD STAGING started
- *   PROCESS ⇒ LOAD STAGING completed
+ * 10. Cleanup:
+ *     - Reset ETI_LOG_BUFFER after write
  *
  *
  * =========================================================
- * 10. DESIGN PRINCIPLES
+ * DESIGN PRINCIPLES
  * =========================================================
  *
- * ✔ Single Source of Truth (Logger only)
- * ✔ No logging logic in business scripts
- * ✔ Context-driven logging
- * ✔ Plug-and-play across system
- * ✔ Performance-first (batch writes)
- * ✔ Readable debug-first design
- *
- *
- * =========================================================
- * 11. CONTROLLER + PIPELINE + LOGGER INTERPLAY
- * =========================================================
- *
- * Controller:
- *   → Defines trigger_type
- *   → Starts execution
- *
- * Pipeline:
- *   → Defines run_context
- *   → Defines pipeline_name
- *
- * Script:
- *   → Emits logs (no context logic)
- *
- * Logger:
- *   → Formats + persists logs
+ * - Centralized logging (no distributed logging logic)
+ * - Context-driven (no local state mutation)
+ * - Non-blocking logging system
+ * - Performance-first (batch writes)
+ * - Schema-driven structure (position agnostic)
+ * - Plug-and-play across all scripts
  *
  *
  * =========================================================
- * 12. FINAL ARCHITECTURE SUMMARY
+ * IDENTITY & SAFETY
  * =========================================================
  *
- * Controller  → WHEN to run
- * Pipeline    → WHAT group to run
- * Script      → HOW logic runs
- * Logger      → WHAT happened (audit + debug)
+ * - Does NOT initialize execution context
+ * - Only reads and enriches from context
+ * - Safe for repeated invocation
+ * - Buffer cleared after flush → no duplication
  *
  * =========================================================
  */
@@ -302,22 +147,22 @@
 
 /* 
 -------------------------------------
-  GLOBAL LOG BUFFER (BATCH WRITE)
--------------------------------------*/
+GLOBAL LOG BUFFER (BATCH WRITE)
+-------------------------*/
 var ETI_LOG_BUFFER = [];
 
 
 /*
--------------------------------------
-LOG FLUSH CONFIG (ADDED)
--------------------------------------*/
+-------------------------
+LOG FLUSH CONFIG
+-------------------------*/
 const ETI_LOG_FLUSH_SIZE = 60;
 
 
 /*
--------------------------------------
+-------------------------
 SCHEMA (SINGLE SOURCE OF TRUTH)
--------------------------------------*/
+-------------------------*/
 const ETI_LOG_SCHEMA = [
   'Timestamp',
   'Level',
@@ -345,9 +190,9 @@ const ETI_LOG_SCHEMA = [
 
 
 /*
--------------------------------------
-SCHEMA INDEX MAP (POSITION AGNOSTIC)
--------------------------------------*/
+-------------------------
+SCHEMA INDEX MAP
+-------------------------*/
 const ETI_LOG_INDEX = (() => {
   const map = {};
   ETI_LOG_SCHEMA.forEach((col, idx) => {
@@ -358,19 +203,19 @@ const ETI_LOG_INDEX = (() => {
 
 
 /*
--------------------------------------
+-------------------------
 LOG SHEET CONSTANTS
--------------------------------------*/
+-------------------------*/
 const ACTION_LOG_SHEET = 'Action_Logs';
 const EXECUTION_LOG_SHEET = 'Execution_Logs';
 
 
 /*
--------------------------------------
-LOG FORMATTER (CENTRALIZED)
--------------------------------------*/
+---------------------------------------------------------
+SUB-MODULE: LOG FORMATTER (CENTRALIZED)
+---------------------------------------------------------*/
 
-/* -------- Semantic Formatting -------- */
+/* --- Semantic Formatting --- */
 function formatAction_(action){
   return (action || '').replace(/_/g, ' ');
 }
@@ -381,7 +226,7 @@ function formatStep_(step){
     .toUpperCase();
 }
 
-/* -------- Safety Formatting -------- */
+/* --- Safety Formatting --- */
 function sanitizeLogText_(text){
   if (!text) return '';
   return String(text)
@@ -391,7 +236,7 @@ function sanitizeLogText_(text){
     .trim();
 }
 
-/* -------- Orchestrator -------- */
+/* --- Orchestrator --- */
 function buildLogComponents_(payload){
 
   const actionDisplay = formatAction_(payload.action);
@@ -418,9 +263,9 @@ function buildLogComponents_(payload){
 
 
 /*
-------------------------------------- 
-  LOGGER SWITCH BUILDER (EXPLICIT)
--------------------------------------*/
+---------------------------------------------------------
+SUB-MODULE: LOGGER SWITCH HANDLING
+---------------------------------------------------------*/
 let LOGGER_SWITCHES = null;
 
 function buildLoggerSwitchMap_(){
@@ -435,9 +280,9 @@ function buildLoggerSwitchMap_(){
 
 
 /*
-------------------------------------
-Logger's  Switches Map
-------------------------------------*/
+-------------------------
+GET LOGGER SWITCHES
+-------------------------*/
 function getLoggerSwitches_(){
   if (!LOGGER_SWITCHES){
     LOGGER_SWITCHES = buildLoggerSwitchMap_();
@@ -446,11 +291,10 @@ function getLoggerSwitches_(){
 }
 
 
-
 /*
--------------------------------------
+-------------------------
 CORE LOGGER (ETI LOG)
--------------------------------------*/
+-------------------------*/
 function ETI_log_(payload) {
   if (!payload) return;
 
@@ -458,62 +302,38 @@ function ETI_log_(payload) {
     payload.functionName = payload.scriptName;
   }
 
-  /*
-  -------------------------------------
-  EXECUTION CONTEXT FALLBACK
-  -------------------------------------*/
+  /* --- EXECUTION CONTEXT --- */
   let ctx = getOrInitExecutionContext_();
   const switches = getLoggerSwitches_();
 
-  /*
-  -------------------------------------
-  ACTION ENHANCEMENT (RESUME VISIBILITY)
-  -------------------------------------*/
+  /* --- ACTION ENHANCEMENT (RESUME VISIBILITY) --- */
   const actionLabel = payload.action || '';
 
-  /*
-  -------------------------------------
-  FORMATTED LOG OUTPUT
-  -------------------------------------*/
+/* --- FORMATTED LOG OUTPUT --- */
   const { logLine, cleanDetails, cleanError } = buildLogComponents_(payload);
 
-  /*
-  -------------------------------------
-  CONSOLE MODE
-  -------------------------------------*/
+  /* --- CONSOLE MODE --- */
   if (switches.console) {
     if (payload.level === 'ERROR') console.error(logLine);
     else console.log(logLine);
   }
 
-  /*
-  -------------------------------------
-  CLASSIFY LOG TYPE
-  -------------------------------------*/
+  /* ---  CLASSIFY LOG TYPE --- */
   const isRowLog = !!payload.rowNumber;
 
-  // Drop only if both disabled
   if (!switches.action && !switches.execution) return;
 
-  // If action is OFF → restrict logs
   if (!switches.action) {
-    if (isRowLog) return;           // skip row logs
+    if (isRowLog) return;
     if (!switches.execution) return;
   }
 
-
-  /*
-  -------------------------------------
-  ACTION LOG (BUFFERED)
-  -------------------------------------*/
+  /* --- BUFFER PUSH --- */
   ETI_LOG_BUFFER.push([
     new Date(),
     payload.level || 'INFO',
 
-    /*
-    -------------------------------------
-    FIX 1: CONTEXT PRIORITY (CRITICAL)
-    -------------------------------------*/
+    /* --- CONTEXT PRIORITY (CRITICAL) --- */
     ctx?.trigger_type || payload.triggerType || 'MANUAL',
     ctx?.run_context || 'STANDALONE',
 
@@ -528,26 +348,17 @@ function ETI_log_(payload) {
     payload.functionName || '',
     payload.sheetName || '',
 
-    /*
-    -------------------------------------
-    FIX 2: SWITCH NAME FROM CONTEXT
-    -------------------------------------*/
+    /* --- SWITCH NAME FROM CONTEXT (IF AVAILABLE) --- */
     payload.switchName || ctx?.switch_name || '',
 
     payload.stepName ? formatStep_(payload.stepName) : '',
     payload.rowNumber || '',
 
-    /*
-    -------------------------------------
-    FIX 3: RESUME VISIBILITY
-    -------------------------------------*/
+    /* --- RESUME VISIBILITY --- */
     cleanDetails
   ]);
 
-  /*
-  -------------------------------------
-  AUTO FLUSH
-  -------------------------------------*/
+  /* --- AUTO FLUSH --- */
   if (ETI_LOG_BUFFER.length >= ETI_LOG_FLUSH_SIZE) {
     flushLogs_();
   }
@@ -555,24 +366,19 @@ function ETI_log_(payload) {
 
 
 /*
--------------------------------------
-LOG SHEET INITIALIZER (CENTRALIZED)
--------------------------------------*/
+-------------------------
+ENSURE GOOGLE SHEET FOR LOGS
+-------------------------*/
 function ensureLogSheet_(logSS, sheetName, schema){
 
   let sh = logSS.getSheetByName(sheetName);
 
-  // Ensure sheet + base schema
   if (!sh) {
     sh = logSS.insertSheet(sheetName);
     sh.appendRow(schema);
   }
 
-
-  /*
-  -------------------------------
-  POSITION-AGNOSTIC HEADER SYSTEM
-  -------------------------------*/
+  /* --- POSITION-AGNOSTIC HEADER SYSTEM --- */
   const existingHeader = sh.getRange(1,1,1,sh.getLastColumn()).getValues()[0];
 
   const headerMap = {};
@@ -580,10 +386,10 @@ function ensureLogSheet_(logSS, sheetName, schema){
     headerMap[col] = idx + 1;
   });
 
-  // Identify missing columns
+  /* --- Identify missing columns --- */
   const missingColumns = schema.filter(col => !headerMap[col]);
 
-  // Append missing columns
+  /* --- Append missing columns --- */
   if (missingColumns.length > 0) {
     sh.getRange(1, existingHeader.length + 1, 1, missingColumns.length)
       .setValues([missingColumns]);
@@ -601,19 +407,16 @@ function ensureLogSheet_(logSS, sheetName, schema){
 
 
 /*
--------------------------------------
-FLUSH LOGS (BATCH WRITE)
--------------------------------------*/
+-------------------------
+FLUSH LOGS (BATCH)
+-------------------------*/
 function flushLogs_(){
 
   if (!ETI_LOG_BUFFER || ETI_LOG_BUFFER.length === 0) return;
 
   const switches = getLoggerSwitches_();
 
-  /*
-  -------------------------------------
-  HARD EXIT (NO LOGGING ENABLED)
-  -------------------------------------*/
+  /* --- HARD EXIT IF BOTH LOGS DISABLED --- */
   if (!switches.action && !switches.execution) return;
 
   const logSS = getLogsSpreadsheet_();
@@ -623,10 +426,7 @@ function flushLogs_(){
   let headerMap = null;
   let execHeaderMap = null;
 
-  /*
-  -------------------------------------
-  CONDITIONAL SHEET INIT
-  -------------------------------------*/
+  /* --- ENSURE SHEETS & HEADERS --- */
   if (switches.action) {
     const res = ensureLogSheet_(logSS, ACTION_LOG_SHEET, ETI_LOG_SCHEMA);
     sh = res.sheet;
@@ -645,10 +445,7 @@ function flushLogs_(){
   const ctx = getExecutionContext_();
   const executionId = ctx?.execution_id;
 
-  /*
-  -------------------------------------
-  EXECUTION-BOUNDARY SEPARATOR (SYNCED)
-  -------------------------------------*/
+  /* ---EXECUTION BOUNDARY SEPARATION (ROW) --- */
   if (ctx) {
 
     if (!ctx.last_flush_log_execution_id) {
@@ -674,20 +471,13 @@ function flushLogs_(){
     }
   }
 
-  /*
-  -------------------------------------
-  CLASSIFICATION (ROW vs EXECUTION)
-  -------------------------------------*/
+  /* --- CLASSIFY LOGS INTO ACTION VS EXECUTION --- */
   const classifiedLogs = ETI_LOG_BUFFER.map(row => ({
     raw: row,
     isRowLog: !!row[ETI_LOG_INDEX['Row_Number']]
   }));
 
-
-/*
--------------------------------------
-POSITION-AWARE WRITE (DUAL LOG)
--------------------------------------*/
+  /* --- PREPARE BATCH OUTPUT ARRAYS --- */
   const actionRows = [];
   const executionRows = [];
 
@@ -698,68 +488,54 @@ POSITION-AWARE WRITE (DUAL LOG)
     const obj = {};
     ETI_LOG_SCHEMA.forEach((col, i) => obj[col] = rawRow[i]);
 
-    /*
-    -------------------------------------
-    BUILD ACTION ROW
-    -------------------------------------*/
+    /* --- ACTION LOGS (ALL ROWS) --- */
     if (switches.action && sh) {
       const actionOutput = new Array(sh.getLastColumn()).fill('');
 
       Object.keys(obj).forEach(col => {
         const colIndex = headerMap[col];
-        if (colIndex) {
-          actionOutput[colIndex - 1] = obj[col];
-        }
+        if (colIndex) actionOutput[colIndex - 1] = obj[col];
       });
 
       actionRows.push(actionOutput);
     }
 
-    /*
-    -------------------------------------
-    BUILD EXECUTION ROW (HEADER MAP)
-    -------------------------------------*/
+
     if (!entry.isRowLog && switches.execution && execSh) {
 
       const execOutput = new Array(execSh.getLastColumn()).fill('');
 
       Object.keys(obj).forEach(col => {
         const colIndex = execHeaderMap[col];
-        if (colIndex) {
-          execOutput[colIndex - 1] = obj[col];
-        }
+        if (colIndex) execOutput[colIndex - 1] = obj[col];
       });
 
       executionRows.push(execOutput);
     }
   });
 
-  /*
-  -------------------------------------
-  ACTION LOG WRITE
-  -------------------------------------*/
+  /* --- BATCH WRITE ACTION LOGS --- */
   if (switches.action && actionRows.length > 0) {
     sh.getRange(startRow, 1, actionRows.length, sh.getLastColumn())
       .setValues(actionRows);
   }
 
-  /*
-  -------------------------------------
-  EXECUTION LOG WRITE
-  -------------------------------------*/
+  /* --- BATCH WRITE EXECUTION LOGS --- */
   if (switches.execution && executionRows.length > 0) {
     execSh.getRange(execStartRow, 1, executionRows.length, execSh.getLastColumn())
       .setValues(executionRows);
   }
 
-
-/*
--------------------------------------
-CLEAR BUFFER
--------------------------------------*/
-ETI_LOG_BUFFER = [];
+  /* --- CLEAR BUFFER --- */
+  ETI_LOG_BUFFER = [];
 }
 
+
+
+/*
+===============================================
+MODULE: LOGGER WRAPPERS (STANDARDIZED LOGGING)
+===============================================/*
 
 /*
 -------------------------------------
@@ -782,6 +558,7 @@ function ETI_logStart_(scriptName, functionName, sheetName){
 -------------------------------------
 WRAPPER: STEP LOGGER
 -------------------------------------*/
+/* --- STEP START --- */
 function ETI_logStepStart_(scriptName, functionName, sheetName, stepName=''){
   ETI_log_({
     scriptName,
@@ -794,7 +571,7 @@ function ETI_logStepStart_(scriptName, functionName, sheetName, stepName=''){
   });
 }
 
-
+/* --- STEP NOTICE (IN-STEP UPDATES) --- */
 function ETI_logNotice_(scriptName, functionName, sheetName, stepName, details=''){
   ETI_log_({
     scriptName,
@@ -807,7 +584,7 @@ function ETI_logNotice_(scriptName, functionName, sheetName, stepName, details='
   });
 }
 
-
+/* --- STEP END --- */
 function ETI_logStepEnd_(scriptName, functionName, sheetName, stepName='', details=''){
   ETI_log_({
     scriptName,
@@ -825,6 +602,7 @@ function ETI_logStepEnd_(scriptName, functionName, sheetName, stepName='', detai
 -------------------------------------
 WRAPPER: SUMMARY LOGGER
 -------------------------------------*/
+/* --- SUMMARY (FUNCTION-LEVEL SYNOPSIS) --- */
 function ETI_logSummary_(scriptName, functionName, sheetName, details){
   ETI_log_({
     scriptName,
@@ -842,6 +620,7 @@ function ETI_logSummary_(scriptName, functionName, sheetName, details){
 -------------------------------------
 WRAPPER: SKIPPED LOGGER
 -------------------------------------*/
+/* --- SKIP NOTICE (FUNCTION-LEVEL) --- */
 function ETI_logSkip_(scriptName, functionName, sheetName, details){
   ETI_log_({
     scriptName,
@@ -859,6 +638,7 @@ function ETI_logSkip_(scriptName, functionName, sheetName, details){
 -------------------------------------
 WRAPPER: EXIT LOGGER
 -------------------------------------*/
+/* --- EXIT NOTICE (EXECUTION-LEVEL) --- */
 function ETI_logExit_(scriptName, functionName, sheetName, details){
   ETI_log_({
     scriptName,
@@ -876,6 +656,7 @@ function ETI_logExit_(scriptName, functionName, sheetName, details){
 -------------------------------------
 WRAPPER: END LOGGER
 -------------------------------------*/
+/* --- END NOTICE (FUNCTION-LEVEL) --- */
 function ETI_logEnd_(scriptName, functionName, sheetName){
   ETI_log_({
     scriptName,
@@ -893,6 +674,7 @@ function ETI_logEnd_(scriptName, functionName, sheetName){
 -------------------------------------
 WRAPPER: ERROR LOGGER
 -------------------------------------*/
+/* --- ERROR NOTICE (FUNCTION-LEVEL) --- */
 function ETI_logError_(scriptName, functionName, sheetName, error, stepName='ERROR'){
   ETI_log_({
     scriptName,
