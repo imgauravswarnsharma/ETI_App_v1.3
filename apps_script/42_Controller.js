@@ -161,11 +161,10 @@
 =========================================================
 MODULE: SWITCH READING & MAPPING
 =========================================================*/
-
 /*
--------------------------
+-------------------------------------
 READ AUTOMATION SWITCH MAP
--------------------------*/
+-------------------------------------*/
 function getAutomationSwitchMap_(){
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -180,7 +179,6 @@ function getAutomationSwitchMap_(){
   const values = sheet.getRange(2,1,1,lastCol).getValues()[0];
 
   const map = {};
-
   for(let i=0;i<header.length;i++){
 
     const name = header[i];
@@ -193,7 +191,6 @@ function getAutomationSwitchMap_(){
 
     map[name] = value;
   }
-
   return map;
 }
 
@@ -202,27 +199,30 @@ function getAutomationSwitchMap_(){
 =========================================================
 MODULE: LOGGING MODE SWITCHES
 =========================================================*/
-
-/* ACTION LOG ENABLED */
+/* ---| ACTION LOG ENABLED |--- */
 function isActionLogEnabled_(){
+
   const switches = getAutomationSwitchMap_();
   return switches["Enable_Action_Log"] === true;
 }
 
-/* EXECUTION LOG ENABLED */
+/* ---| EXECUTION LOG ENABLED |--- */
 function isExecutionLogEnabled_(){
+
   const switches = getAutomationSwitchMap_();
   return switches["Enable_Execution_Log"] === true;
 }
 
-/* CONSOLE LOG ENABLED */
+/* ---| CONSOLE LOG ENABLED |--- */
 function isConsoleLogEnabled_(){
+
   const switches = getAutomationSwitchMap_();
   return switches["Enable_Console_Log"] === true;
 }
 
-/* DEBUG MODE ENABLED */
+/* ---| DEBUG MODE ENABLED |--- */
 function isDebugModeEnabled_(){
+
   const switches = getAutomationSwitchMap_();
   const mode = switches["Access_Mode"];
   return mode === "GOD" || mode === "DEV_L2" || mode === "DEV_L1";
@@ -233,11 +233,10 @@ function isDebugModeEnabled_(){
 =========================================================
 MODULE: EXECUTION STATE UTILITIES
 =========================================================*/
-
 /*
--------------------------
+-------------------------------------
 GET EXECUTION STATUS MAP
--------------------------*/
+-------------------------------------*/
 function getExecutionStatusMap_(){
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -264,11 +263,10 @@ function getExecutionStatusMap_(){
 =========================================================
 MODULE: SWITCH CONTROL UTILITIES
 =========================================================*/
-
 /* 
-------------------------
+-------------------------------------
 CHECK EXECUTABLE SWITCH
-------------------------*/
+-------------------------------------*/
 function isExecutableSwitch_(name){
 
   return (
@@ -280,9 +278,9 @@ function isExecutableSwitch_(name){
 
 
 /*
--------------
+-------------------------------------
 RESET SWITCH
--------------*/
+-------------------------------------*/
 function resetSwitch_(switchName){
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -300,9 +298,9 @@ function resetSwitch_(switchName){
 
 
 /* 
----------------------
+-------------------------------------
 SET EXECUTION STATUS 
----------------------*/
+-------------------------------------*/
 function setExecutionStatus_(switchName, status){
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -320,9 +318,9 @@ function setExecutionStatus_(switchName, status){
 
 
 /* 
-------------------------
+-------------------------------------
 SET EXECUTION TIMESTAMP 
-------------------------*/
+-------------------------------------*/
 function setExecutionTimestamp_(switchName, timestamp){
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -340,9 +338,9 @@ function setExecutionTimestamp_(switchName, timestamp){
 
 
 /* 
------------------------
+-------------------------------------
 SET EXECUTION DURATION 
------------------------*/
+-------------------------------------*/
 function setExecutionDuration_(switchName, durationMs){
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -360,9 +358,9 @@ function setExecutionDuration_(switchName, durationMs){
 
 
 /*
-----------------
+-------------------------------------
 SET LOG MESSAGE
-----------------*/
+-------------------------------------*/
 function setLogMessage_(switchName, message){
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -383,11 +381,10 @@ function setLogMessage_(switchName, message){
 =========================================================
 MODULE: HELPER UTILITIES
 =========================================================*/
-
 /* 
-----------------
+-------------------------------------
 FORMAT DURATION 
-----------------*/
+-------------------------------------*/
 function formatDuration_(ms){
 
   const totalSeconds = Math.floor(ms / 1000);
@@ -406,21 +403,16 @@ function formatDuration_(ms){
 /*
 =========================================================
 MODULE: CONTROLLER ENGINE
-=========================================================
-*/
-
+=========================================================*/
 /*
-----------------------
+-------------------------------------
 AUTOMATION CONTROLLER
-----------------------*/
+-------------------------------------*/
 function automationController_onChange(e){
-
   const switches = getAutomationSwitchMap_();
   const statusMap = getExecutionStatusMap_();
 
-
-
-  /* --- PHASE 1 — MARK WAITING (NO LOCK) --- */
+  /* ---| PHASE 1 — MARK WAITING (NO LOCK) |--- */
   for(const name in switches){
 
     if(!isExecutableSwitch_(name)) continue;
@@ -436,17 +428,15 @@ function automationController_onChange(e){
     }
   }
 
-
-  /* --- PHASE 2 — LOCK CONTROL --- */
+  /* ---| PHASE 2 — LOCK CONTROL |--- */
   const lock = LockService.getScriptLock();
 
   if (!lock.tryLock(1000)) {
     return;
   }
 
-
   try {
-    /* --- PREVENT PARALLEL RUNNING --- */
+    /* ---| PREVENT PARALLEL RUNNING |--- */
     const updatedStatusMap = getExecutionStatusMap_();
 
     for(const key in updatedStatusMap){
@@ -455,8 +445,7 @@ function automationController_onChange(e){
       }
     }
 
-
-    /* --- FUNCTION MAP --- */
+    /* ---| FUNCTION MAP |--- */
     const functionMap = {
 
       "Run_Transaction_Pipeline": pipeline_transactions_,
@@ -482,7 +471,7 @@ function automationController_onChange(e){
     };
 
 
-    /* --- LOOP — PROCESS QUEUE --- */
+    /* ---| LOOP — PROCESS QUEUE |--- */
     const MAX_ITERATIONS = 20;
     let iteration = 0;
 
@@ -522,9 +511,7 @@ function automationController_onChange(e){
 
         ETI_executeControlledFunction_(nextSwitch, fn);
 
-
-        /* --- CHECK IF SCHEDULER WILL CONTINUE --- */
-
+        /* ---| CHECK IF SCHEDULER WILL CONTINUE |--- */
         if (getExecutionContext_()?.incomplete_step === true) {
 
           setExecutionStatus_(nextSwitch, "RUNNING");
@@ -564,9 +551,7 @@ function automationController_onChange(e){
 /*
 =========================================================
 MODULE: EXECUTION WRAPPER
-=========================================================
-*/
-
+=========================================================*/
 /*
 -----------------------------
 CONTROLLED EXECUTION WRAPPER
@@ -607,9 +592,7 @@ function ETI_executeControlledFunction_(switchName, fn){
 /*
 =========================================================
 MODULE: SCHEDULER FINALIZATION
-=========================================================
-*/
-
+=========================================================*/
 /*
 -------------------
 FINALIZE EXECUTION

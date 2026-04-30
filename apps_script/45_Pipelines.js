@@ -145,9 +145,9 @@
 
 
 /* 
-=========================
+=========================================================
 PIPELINE: Transactions
-========================= */
+=========================================================*/
 function pipeline_transactions_(){
 
   /* --- EXECUTION CONTEXT --- */
@@ -229,9 +229,9 @@ function pipeline_transactions_(){
 
 
 /* 
-=========================
+=========================================================
 PIPELINE: Items
-========================= */
+=========================================================*/
 function pipeline_items_(){
 
   /* --- EXECUTION CONTEXT --- */
@@ -315,9 +315,9 @@ function pipeline_items_(){
 }
 
 
-/* =========================
+/* =========================================================
    PIPELINE: Brands
-   ========================= */
+   ========================================================= */
 function pipeline_brands_(){
 
   /* --- EXECUTION CONTEXT --- */
@@ -403,9 +403,9 @@ function pipeline_brands_(){
 }
 
 
-/* =========================
+/* =========================================================
    PIPELINE: Products
-   ========================= */
+   ========================================================= */
 function pipeline_products_(){
 
   /* --- EXECUTION CONTEXT --- */
@@ -490,9 +490,10 @@ function pipeline_products_(){
   }
 }
 
-/* ===============================
+
+/* =========================================================
    PIPELINE: Items-Brands Mapping
-   =============================== */
+   ========================================================= */
 function pipeline_item_brand_mapping_(){
 
   /* --- EXECUTION CONTEXT --- */
@@ -533,10 +534,7 @@ function pipeline_item_brand_mapping_(){
 
       const fn = steps[i];
 
-        /*
-        -------------------------------------
-        SAVE RESUME POINTER (CRITICAL)
-        -------------------------------------*/
+      /* --- SAVE RESUME POINTER (CRITICAL) ---*/
       ctx.function_index = i;
       ctx.function_name = fn.name;
       saveExecutionContext_();
@@ -579,9 +577,9 @@ function pipeline_item_brand_mapping_(){
 }
 
 
-/* ========================================
+/* =========================================================
    PIPELINE: Items-Brands-Products Mapping
-   ======================================== */
+   ========================================================= */
 function pipeline_item_brand_product_mapping_(){
 
   /* --- EXECUTION CONTEXT --- */
@@ -665,9 +663,9 @@ function pipeline_item_brand_product_mapping_(){
 }
 
 
-/* =============================
+/* =========================================================
    PIPELINE: Sheets Metadata
-   ============================= */
+   ========================================================= */
 function sheets_metadata_pipeline_(){
 
   /* --- EXECUTION CONTEXT --- */
@@ -751,9 +749,9 @@ function sheets_metadata_pipeline_(){
   }
 }
 
-/* =============================
+/* =========================================================
    PIPELINE: Scripts Metadata 
-   ============================= */
+   ========================================================= */
 function scripts_metadata_pipeline_(){
 
  /* --- EXECUTION CONTEXT --- */ 
@@ -845,9 +843,9 @@ function scripts_metadata_pipeline_(){
   }
 }
 
-/* =========================
+/* =========================================================
    PIPELINE: Full Metadata
-   ========================= */
+   ========================================================= */
 function full_metadata_pipeline_(){
 
   /* --- EXECUTION CONTEXT --- */
@@ -929,9 +927,9 @@ function full_metadata_pipeline_(){
   }
 }
 
-/* ============================
+/* =========================================================
    PIPELINE: Access Governance
-   ============================ */
+   ========================================================= */
 function pipeline_access_mode_(){
 
   /*

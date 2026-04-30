@@ -155,16 +155,10 @@
  */
 
 
-/*
-=========================================================
-MODULE: SCHEDULER CONFIGURATION
-=========================================================
-*/
 
-/*
----------------------
-SCHEDULER CONFIG
----------------------*/
+
+/* --- SCHEDULER CONFIG --- */
+
 const ETI_SCHEDULER_CONFIG = {
   TIME_LIMIT_MS: 1 * 5000 * 1000,   // 5 min (max hard limit)
   BUFFER_MS: 2000,              // Safety buffer
@@ -177,11 +171,9 @@ const ETI_SCHEDULER_CONFIG = {
 =========================================================
 MODULE: RUNTIME FLAGS
 =========================================================*/
-
 /*
 ----------------------------
-CONTINUATION TRACKING FLAG
-----------------------------*/
+/* --- CONTINUATION TRACKING FLAG --- */
 var __ETI_CONTINUATION_SCHEDULED__ = false;
 
 
@@ -189,11 +181,10 @@ var __ETI_CONTINUATION_SCHEDULED__ = false;
 =========================================================
 MODULE: TIMEOUT MANAGEMENT
 =========================================================*/
-
 /*
--------------------------
+-------------------------------------
 CHECK IF SHOULD EXIT
--------------------------*/
+-------------------------------------*/
 function shouldExitForTimeout_(startTime){
 
   const now = new Date().getTime();
@@ -206,13 +197,11 @@ function shouldExitForTimeout_(startTime){
 /*
 =========================================================
 MODULE: TRIGGER MANAGEMENT
-=========================================================
-*/
-
+=========================================================*/
 /*
--------------------------
+-------------------------------------
 CLEAR SCHEDULER TRIGGERS
--------------------------*/
+-------------------------------------*/
 function clearExistingSchedulerTriggers_(){
 
   const triggers = ScriptApp.getProjectTriggers();
@@ -226,9 +215,9 @@ function clearExistingSchedulerTriggers_(){
 
 
 /*
-------------------------------
+-------------------------------------
 SCHEDULE CONTINUATION TRIGGER
-------------------------------*/
+-------------------------------------*/
 function scheduleContinuation_(){
 
   const props = PropertiesService.getScriptProperties();
@@ -241,8 +230,8 @@ function scheduleContinuation_(){
   if (active === 'TRUE' && lastTs){
     const diff = now - Number(lastTs);
 
-    // Prevent rapid duplicate triggers (max <5 sec)
-    if (diff < 500){    // 500ms currently, can adjust as needed
+    
+    if (diff < 500){   // Prevent rapid duplicate triggers. 500ms currently, can adjust as needed
       return;
     }
   }
@@ -268,11 +257,10 @@ function scheduleContinuation_(){
 =========================================================
 MODULE: STATE PERSISTENCE
 =========================================================*/
-
 /*
----------------------
+-------------------------------------
 SAVE EXECUTION STATE
----------------------*/
+-------------------------------------*/
 function saveExecutionState_(meta = {}){
 
   const ctx = getExecutionContext_();
@@ -296,11 +284,10 @@ function saveExecutionState_(meta = {}){
 =========================================================
 MODULE: EXIT & CONTINUATION HANDLING
 =========================================================*/
-
 /*
-----------------------------------
+-------------------------------------
 EXIT + SCHEDULE CONTINUATION
-----------------------------------*/
+-------------------------------------*/
 function exitAndScheduleContinuation_(scriptName, functionName, meta = {}){
 
   const ctx = getExecutionContext_();
@@ -367,7 +354,6 @@ function exitAndScheduleContinuation_(scriptName, functionName, meta = {}){
 =========================================================
 MODULE: RESUME ENGINE
 =========================================================*/
-
 /*
 -------------------------
 SCHEDULER RESUME ENTRY
