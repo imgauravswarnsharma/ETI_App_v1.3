@@ -59,7 +59,7 @@ function populateStagingLookupProducts_FromTransactionResolution() {
   const TGT_SHEET = 'Staging_Lookup_Products';
 
   const t0 = new Date();
-
+  let shouldExit = false; //
   try {
 
     /* --- INITIALIZATION --- */
@@ -139,7 +139,6 @@ function populateStagingLookupProducts_FromTransactionResolution() {
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_TXN');
 
 
-    /* --- VALIDATION: SOURCE DATA --- */
     if (tsData.length <= 1) {
       ETI_logSkip_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'SRC_Table contains no data rows. Verify!');
       ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
@@ -150,11 +149,11 @@ function populateStagingLookupProducts_FromTransactionResolution() {
     /*
     ---------------------------------------------------------
     PROCESS LOOP
-    ---------------------------------------------------------
+    ---------------------------------------------------------*/
     // Scan transactions → extract unresolved product canonicals
     // Apply validation + deduplication
     // Construct staging rows
-    */
+    
     let scanned = 0;
     let skipNoTxn = 0;
     let skipHasProduct = 0;
@@ -182,6 +181,25 @@ function populateStagingLookupProducts_FromTransactionResolution() {
 
       // Skip already staged canonical (dedupe)
       if (stagingCanonSet.has(canon)) { skipDuplicateCanon++; continue; }
+
+      /* --- SCHEDULER CHECK --- */
+      if (shouldExitForTimeout_(t0)) {
+
+        if (rowsToAppend.length > 0) {
+          stgSh.getRange(
+            stgSh.getLastRow() + 1,
+            1,
+            rowsToAppend.length,
+            stgHdr.length
+          ).setValues(rowsToAppend);
+
+          rowsToAppend.length = 0;
+          flushLogs_();
+        }
+
+        shouldExit = true;
+        break;
+      }
 
       // Construct staging row
       const row = new Array(stgHdr.length).fill('');
@@ -239,7 +257,6 @@ function populateStagingLookupProducts_FromTransactionResolution() {
         rowsToAppend.length,
         stgHdr.length
       ).setValues(rowsToAppend);
-
     } else {
 
       /* --- NOTICE — NO INSERT --- */
@@ -266,6 +283,16 @@ function populateStagingLookupProducts_FromTransactionResolution() {
       `Skipped: NoTxn=${skipNoTxn}, HasProduct=${skipHasProduct}, NoCanon=${skipNoCanon}, Duplicate=${skipDuplicateCanon} | ` +
       `DurationMs=${durationMs}`
     );
+
+
+    /* --- SCHEDULER EXIT --- */
+    if (shouldExit) {
+      return exitAndScheduleContinuation_(
+        SCRIPT_NAME,
+        FUNCTION_NAME,
+        { pipelineName: getExecutionContext_()?.pipeline_name }
+      );
+    }
 
     ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
 
@@ -342,7 +369,7 @@ function processStagingProducts_StateMachine() {
   const SRC_SHEET     = 'Staging_Lookup_Products';
 
   const t0 = new Date();
-
+  let shouldExit = false; // 
   try {
 
     /* --- INITIALIZATION --- */
@@ -401,12 +428,12 @@ function processStagingProducts_StateMachine() {
     /*
     ---------------------------------------------------------
     PROCESS LOOP
-    ---------------------------------------------------------
+    ---------------------------------------------------------*/
     // Apply Admin_Action → governance state mapping
     // Repair drift between expected and actual state
     // Validate state integrity
     // Derive dependent governance fields
-    */
+    
     for (let i = 1; i < data.length; i++) {
 
       const row = data[i];
@@ -416,14 +443,20 @@ function processStagingProducts_StateMachine() {
       // Skip rows without Admin_Action (no processing required)
       if (!admin) continue;
 
+      /* --- SCHEDULER CHECK --- */
+      if (shouldExitForTimeout_(t0)) {
+        flushLogs_();
+        shouldExit = true;
+        break;
+      }
 
       // Map Admin_Action → expected governance state
       let expected = { approved: false, active: false, archived: false };
 
       switch (admin) {
 
-        case 'Review':
-          break;
+        case 'Review': 
+        break;
 
         case 'Activate':
           expected.active = true;
@@ -453,7 +486,6 @@ function processStagingProducts_StateMachine() {
           row[IDX.integrity] = 'INVALID_ADMIN_ACTION';
           continue;
       }
-
 
       let drift = [];
 
@@ -585,6 +617,16 @@ function processStagingProducts_StateMachine() {
       `Valid=${valid}, Repaired=${repaired}, Invalid=${invalid}, DurationMs=${durationMs}`
     );
 
+
+    /* --- SCHEDULER EXIT --- */
+    if (shouldExit) {
+      return exitAndScheduleContinuation_(
+        SCRIPT_NAME,
+        FUNCTION_NAME,
+        { pipelineName: getExecutionContext_()?.pipeline_name }
+      );
+    }
+
     ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET);
 
   } catch (err) {
@@ -597,7 +639,6 @@ function processStagingProducts_StateMachine() {
     flushLogs_();
   }
 }
-
 
 
 /* 
@@ -651,7 +692,6 @@ FUNCTION: PRODUCT PROMOTION TO LOOKUP
  * - Required column missing
  */
 
-
 function promoteApprovedProducts_FromStaging_ToLookup() {
 
   /* --- FUNCTION-LEVEL CONSTANTS --- */
@@ -661,6 +701,7 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
   const TGT_SHEET     = 'Lookup_Products';
 
   const t0 = new Date();
+  let shouldExit = false;
 
   try {
 
@@ -687,14 +728,13 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
       isApproved: lkCol('Is_Approved'),
       isActive: lkCol('Is_Active'),
       isArchived: lkCol('Is_Archived'),
+      productStatus: lkCol('Product_Status'),
       isStgPromoted: lkCol('Is_Staging_Promoted'),
       sourceType: lkCol('Source_Type'),
       createdAt: lkCol('Created_At'),
       notes: lkCol('Notes'),
       productIdMachine: lkCol('Product_ID_Machine'),
-      stagingId: lkCol('Staging_ID_Machine'),
-      sourceItem: lkCol('Source_Item_ID_Machine'),
-      sourceBrand: lkCol('Source_Brand_ID_Machine')
+      stagingId: lkCol('Staging_Product_ID_Machine')
     };
 
     for (const [k,v] of Object.entries(IDX_LK)) {
@@ -727,9 +767,7 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
       entityOwner: stgCol('Entity_Owner'),
       promotionLabel: stgCol('Promotion_Label'),
       promotedAt: stgCol('Promoted_At'),
-      productStatus: stgCol('Product_Status'),
-      sourceItem: stgCol('Source_Item_ID_Machine'),
-      sourceBrand: stgCol('Source_Brand_ID_Machine')
+      productStatus: stgCol('Product_Status')
     };
 
     for (const [k,v] of Object.entries(IDX_STG)) {
@@ -747,22 +785,19 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
     }
 
 
+
     /*
     ---------------------------------------------------------
     PROCESS LOOP
-    ---------------------------------------------------------
-    // Evaluate staging rows → promote eligible products
-    // Create lookup entries
-    // Update staging metadata
-    */
+    --------------------------------------------------------*/
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'PROMOTION');
+
+    const lookupAppendRows = [];
+    const stagingUpdates   = [];
 
     let scanned = 0;
     let promoted = 0;
     let skipped = 0;
-
-    const lookupAppendRows = [];
-    const stagingUpdates   = [];
 
     for (let i = 1; i < stgData.length; i++) {
 
@@ -780,6 +815,13 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
       const finalName = r[IDX_STG.approved] || r[IDX_STG.entered];
       if (!finalName) { skipped++; continue; }
 
+      /* --- SCHEDULER CHECK --- */
+      if (shouldExitForTimeout_(t0)) {
+        flushLogs_();
+        shouldExit = true;
+        break;
+      }
+
       const canon = r[IDX_STG.canon] || '';
       const stagingId = r[IDX_STG.stagingId];
 
@@ -796,7 +838,7 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
       newLookupRow[IDX_LK.isApproved] = r[IDX_STG.isApproved];
       newLookupRow[IDX_LK.isActive]   = r[IDX_STG.isActive];
       newLookupRow[IDX_LK.isArchived] = r[IDX_STG.isArchived];
-
+      newLookupRow[IDX_LK.productStatus] = r[IDX_STG.productStatus];
       newLookupRow[IDX_LK.isStgPromoted] = true;
       newLookupRow[IDX_LK.sourceType] = 'STAGING_PROMOTION';
 
@@ -910,6 +952,16 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
       `Scanned=${scanned}, Promoted=${promoted}, Skipped=${skipped}, DurationMs=${durationMs}`
     );
 
+
+    /* --- SCHEDULER EXIT --- */
+    if (shouldExit) {
+      return exitAndScheduleContinuation_(
+        SCRIPT_NAME,
+        FUNCTION_NAME,
+        { pipelineName: getExecutionContext_()?.pipeline_name }
+      );
+    }
+
     ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
 
   } catch (err) {
@@ -922,6 +974,7 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
     flushLogs_();
   }
 }
+
 
 
 

@@ -357,6 +357,221 @@ function backfillTxnIDs_TransactionRaw() {
 }
 
 
+
+/* 
+=========================================================
+FUNCTION: TXN ID CLEANUP (ORPHAN TRANSACTION IDs)
+========================================================= */
+/**
+ * Script Name: cleanupOrphan_TxnIDs_TransactionRaw
+ * Script Language: Google Apps Script (JavaScript)
+ * App Version: v1.3
+ *
+ * PURPOSE:
+ * - Remove orphan Txn_ID_Machine values
+ * - Identify rows where Txn_ID exists but no transaction data exists
+ * - Clear only Txn_ID (not full row)
+ *
+ * PRECONDITIONS:
+ * - Sheet exists: Transaction_Raw
+ * - Required columns exist
+ *
+ * =========================================================
+ * EXECUTION FLOW
+ * =========================================================
+ * 1. Load full dataset
+ * 2. Iterate rows:
+ *    - Identify orphan Txn_ID rows
+ *    - Clear Txn_ID only
+ * 3. Batch write updates
+ *
+ * =========================================================
+ * ALGORITHM (IMPLEMENTATION LOGIC)
+ * =========================================================
+ * - Condition:
+ *     Txn_ID exists AND all business fields are empty
+ * - Clear Txn_ID
+ *
+ * FAILURE MODES:
+ * - Sheet missing
+ * - Column missing
+ */
+
+
+function cleanupOrphan_TxnIDs_TransactionRaw() {
+
+  /* --- FUNCTION-LEVEL CONSTANTS & STATE --- */
+  const SCRIPT_NAME  = 'Transactions';
+  const FUNCTION_NAME = 'cleanupOrphan_TxnIDs_TransactionRaw';
+  const SHEET_NAME   = 'Transaction_Raw';
+
+  const t0 = new Date();
+  let shouldExit = false;
+
+
+  /*
+  ============================================
+  CORE EXECUTION BLOCK
+  ============================================*/
+  try {
+
+    /* --- INITIALIZATION --- */
+    ETI_logStart_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME);
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sh = ss.getSheetByName(SHEET_NAME);
+    if (!sh) throw new Error(`Sheet ${SHEET_NAME} not found`);
+
+    const range = sh.getDataRange();
+    const data  = range.getValues();
+
+
+    /* --- VALIDATION: DATA PRESENCE --- */
+    if (data.length < 2) {
+
+      ETI_logSkip_(
+        SCRIPT_NAME,
+        FUNCTION_NAME,
+        SHEET_NAME,
+        'No data rows found'
+      );
+
+      ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME);
+      return;
+    }
+
+
+    /* --- HEADER RESOLUTION --- */
+    const header = data[0];
+    const col = n => header.indexOf(n);
+
+    const IDX = {
+      trxDate: col('Trx_Date_Entered'),
+      item:    col('Item_Name_Entered'),
+      qtyVal:  col('Qty_Value_Entered'),
+      qtyUnit: col('Qty_Unit_Entered'),
+      price:   col('Price_Entered'),
+      txnId:   col('Txn_ID_Machine')
+    };
+
+    for (const [k, v] of Object.entries(IDX)) {
+      if (v === -1) throw new Error(`Missing required column: ${k}`);
+    }
+
+
+    /* 
+    ---------------------------------------------------------
+    PROCESS LOOP [CLEAR ORPHAN TXN IDs]
+    --------------------------------------------------------- */
+    let clearedCount = 0;
+    const output = data.map(r => r.slice());
+
+    for (let i = 1; i < output.length; i++) {
+
+      const rowNum = i + 1;
+      const r = output[i];
+
+      const txnId = r[IDX.txnId];
+
+      // Determine if ANY business field exists
+      const hasBusinessData =
+        r[IDX.trxDate] ||
+        r[IDX.item] ||
+        r[IDX.qtyVal] ||
+        r[IDX.qtyUnit] ||
+        r[IDX.price];
+
+      // Skip non-orphan rows
+      if (!(txnId && !hasBusinessData)) continue;
+
+
+      /* --- SCHEDULER CHECK --- */
+      if (shouldExitForTimeout_(t0)) {
+        shouldExit = true;
+        break;
+      }
+
+      // Orphan = Txn_ID exists but no transaction data → clear ID
+      output[i][IDX.txnId] = '';
+      clearedCount++;
+
+      // Log mutation
+      ETI_log_({
+        scriptName: SCRIPT_NAME,
+        functionName: FUNCTION_NAME,
+        sheetName: SHEET_NAME,
+        level: 'WARN',
+        rowNumber: rowNum,
+        action: 'PROCESS',
+        stepName: 'CLEANUP_ORPHAN_TXN_ID',
+        details: `Txn_ID_Machine orphan cleared: ${txnId}`
+      });
+    }
+
+
+    /* --- STEP: WRITE_BACK --- */
+    ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME, 'WRITE_BACK');
+
+    range.setValues(output);
+
+    ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME, 'WRITE_BACK');
+
+
+    /* --- SUMMARY --- */
+    ETI_logSummary_(
+      SCRIPT_NAME,
+      FUNCTION_NAME,
+      SHEET_NAME,
+      `Cleared=${clearedCount}`
+    );
+
+
+    /* --- SCHEDULER EXIT --- */
+    if (shouldExit) {
+      return exitAndScheduleContinuation_(
+        SCRIPT_NAME,
+        FUNCTION_NAME,
+        {
+          pipelineName: getExecutionContext_()?.pipeline_name
+        }
+      );
+    }
+
+    ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME);
+
+  }
+
+
+  /*
+  ============================================
+  ERROR BLOCK
+  ============================================*/
+  catch (err) {
+
+    ETI_logError_(
+      SCRIPT_NAME,
+      FUNCTION_NAME,
+      SHEET_NAME,
+      err,
+      'MAIN'
+    );
+
+    throw err;
+  }
+
+
+  /*
+  ============================================
+  FINALIZATION BLOCK
+  ============================================*/
+  finally {
+
+    flushLogs_();
+  }
+}
+
+
+
 /* 
 =========================================================
   FUNCTION: TXN CLEANUP (INVALID TRANSACTIONS)
@@ -655,3 +870,4 @@ function cleanupInvalidTransactions_TransactionRaw() {
     flushLogs_(); // guarantees log persistence in all paths
   }
 }
+

@@ -76,14 +76,12 @@
 function populateStagingLookupItems_FromTransactionResolution() {
 
   /* --- FUNCTION-LEVEL CONSTANTS & STATE --- */
-  const t0 = new Date(); // Execution timer
-  
   const SCRIPT_NAME = 'Items';
   const FUNCTION_NAME = 'populateStagingLookupItems_FromTransactionResolution';
   const SRC_SHEET = 'Transaction_Resolution';
   const TGT_SHEET = 'Staging_Lookup_Items';
 
-  
+  const t0 = new Date(); // Execution timer
 
   let shouldExit = false; // Scheduler-controlled exit flag (loop-safe, no return inside loop)
 
@@ -206,6 +204,20 @@ function populateStagingLookupItems_FromTransactionResolution() {
 
       /* --- SCHEDULER CHECK --- */
       if (shouldExitForTimeout_(t0)) {
+
+        if (rowsToAppend.length > 0) {
+          stgSh.getRange(
+            stgSh.getLastRow() + 1,
+            1,
+            rowsToAppend.length,
+            stgHdr.length
+          ).setValues(rowsToAppend);
+
+          rowsToAppend.length = 0;
+
+          flushLogs_();
+        }
+
         shouldExit = true;
         break;
       }
@@ -242,6 +254,21 @@ function populateStagingLookupItems_FromTransactionResolution() {
       });
 
       stagingCanonSet.add(canon);
+
+      /* --- PERIODIC FLUSH --- */
+      if (i % 200 === 0 && rowsToAppend.length > 0) {
+
+        stgSh.getRange(
+          stgSh.getLastRow() + 1,
+          1,
+          rowsToAppend.length,
+          stgHdr.length
+        ).setValues(rowsToAppend);
+
+        rowsToAppend.length = 0;
+
+        flushLogs_();
+      }
     }
 
 
@@ -255,6 +282,8 @@ function populateStagingLookupItems_FromTransactionResolution() {
         rowsToAppend.length,
         stgHdr.length
       ).setValues(rowsToAppend);
+
+      flushLogs_();
     }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_OUTPUT');
@@ -802,6 +831,7 @@ function processStagingItems_StateMachine() {
  *
  * */
 
+
 function promoteApprovedItems_FromStaging_ToLookup() {
 
   /* --- FUNCTION-LEVEL CONSTANTS & STATE --- */
@@ -927,6 +957,33 @@ function promoteApprovedItems_FromStaging_ToLookup() {
 
       /* --- SCHEDULER CHECK --- */
       if (shouldExitForTimeout_(t0)) {
+
+        if (lookupAppendRows.length > 0) {
+          lkSh.getRange(
+            lkSh.getLastRow() + 1,
+            1,
+            lookupAppendRows.length,
+            lookupAppendRows[0].length
+          ).setValues(lookupAppendRows);
+          lookupAppendRows.length = 0;
+        }
+
+        if (stagingUpdates.length > 0) {
+          for (const u of stagingUpdates) {
+            stgSh.getRange(u.row, IDX_STG.mappedId + 1).setValue(u.mappedId);
+            stgSh.getRange(u.row, IDX_STG.isPromoted + 1).setValue(true);
+            stgSh.getRange(u.row, IDX_STG.reviewStatus + 1).setValue('Promoted');
+            stgSh.getRange(u.row, IDX_STG.entityOwner + 1).setValue('Lookup');
+            stgSh.getRange(u.row, IDX_STG.promotionLabel + 1).setValue('Promoted');
+            stgSh.getRange(u.row, IDX_STG.promotedAt + 1).setValue(new Date());
+            stgSh.getRange(u.row, IDX_STG.itemStatus + 1).setValue(u.status);
+            stgSh.getRange(u.row, IDX_STG.notes + 1).setValue(u.note);
+          }
+          stagingUpdates.length = 0;
+        }
+
+        flushLogs_();
+
         shouldExit = true;
         break;
       }
@@ -990,10 +1047,39 @@ function promoteApprovedItems_FromStaging_ToLookup() {
       });
 
       promoted++;
+
+      /* --- PERIODIC FLUSH --- */
+      if (i % 200 === 0) {
+
+        if (lookupAppendRows.length > 0) {
+          lkSh.getRange(
+            lkSh.getLastRow() + 1,
+            1,
+            lookupAppendRows.length,
+            lookupAppendRows[0].length
+          ).setValues(lookupAppendRows);
+          lookupAppendRows.length = 0;
+        }
+
+        if (stagingUpdates.length > 0) {
+          for (const u of stagingUpdates) {
+            stgSh.getRange(u.row, IDX_STG.mappedId + 1).setValue(u.mappedId);
+            stgSh.getRange(u.row, IDX_STG.isPromoted + 1).setValue(true);
+            stgSh.getRange(u.row, IDX_STG.reviewStatus + 1).setValue('Promoted');
+            stgSh.getRange(u.row, IDX_STG.entityOwner + 1).setValue('Lookup');
+            stgSh.getRange(u.row, IDX_STG.promotionLabel + 1).setValue('Promoted');
+            stgSh.getRange(u.row, IDX_STG.promotedAt + 1).setValue(new Date());
+            stgSh.getRange(u.row, IDX_STG.itemStatus + 1).setValue(u.status);
+            stgSh.getRange(u.row, IDX_STG.notes + 1).setValue(u.note);
+          }
+          stagingUpdates.length = 0;
+        }
+
+        flushLogs_();
+      }
     }
 
 
-    // No-op notice
     if (promoted === 0) {
       ETI_logNotice_(
         SCRIPT_NAME,
@@ -1018,6 +1104,8 @@ function promoteApprovedItems_FromStaging_ToLookup() {
         lookupAppendRows.length,
         lookupAppendRows[0].length
       ).setValues(lookupAppendRows);
+
+      flushLogs_();
     }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_LOOKUP');
@@ -1035,6 +1123,10 @@ function promoteApprovedItems_FromStaging_ToLookup() {
       stgSh.getRange(u.row, IDX_STG.promotedAt + 1).setValue(new Date());
       stgSh.getRange(u.row, IDX_STG.itemStatus + 1).setValue(u.status);
       stgSh.getRange(u.row, IDX_STG.notes + 1).setValue(u.note);
+    }
+
+    if (stagingUpdates.length > 0) {
+      flushLogs_();
     }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_BACK_STAGING');
@@ -1082,7 +1174,6 @@ function promoteApprovedItems_FromStaging_ToLookup() {
     flushLogs_();
   }
 }
-
 
 /* 
 =========================================================

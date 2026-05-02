@@ -740,7 +740,6 @@ FUNCTION: BRAND PROMOTION TO LOOKUP
  */
 function promoteApprovedBrands_FromStaging_ToLookup() {
 
-  /* --- FUNCTION-LEVEL CONSTANTS & STATE --- */
   const SCRIPT_NAME  = 'Brands';
   const FUNCTION_NAME = 'promoteApprovedBrands_FromStaging_ToLookup';
   const SRC_SHEET    = 'Staging_Lookup_Brands';
@@ -788,10 +787,7 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
       notes: lkCol('Notes'),
 
       brandIdMachine: lkCol('Brand_ID_Machine'),
-      stagingId: lkCol('Staging_ID_Machine'),
-
-      sourceItem: lkCol('Source_Item_ID_Machine'),
-      sourceProduct: lkCol('Source_Product_ID_Machine')
+      stagingId: lkCol('Staging_Brand_ID_Machine')
     };
 
     for (const [k,v] of Object.entries(IDX_LK)) {
@@ -829,10 +825,7 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
       entityOwner: stgCol('Entity_Owner'),
       promotionLabel: stgCol('Promotion_Label'),
       promotedAt: stgCol('Promoted_At'),
-      brandStatus: stgCol('Brand_Status'),
-
-      sourceItem: stgCol('Source_Item_ID_Machine'),
-      sourceProduct: stgCol('Source_Product_ID_Machine')
+      brandStatus: stgCol('Brand_Status')
     };
 
     for (const [k,v] of Object.entries(IDX_STG)) {
@@ -842,7 +835,6 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_STAGING');
 
 
-    /* --- VALIDATION: SOURCE DATA --- */
     if (stgData.length <= 1) {
       ETI_logSkip_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'No data rows found');
       ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
@@ -908,9 +900,6 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
 
       newLookupRow[IDX_LK.brandIdMachine] = brandIdMachine;
       newLookupRow[IDX_LK.stagingId] = stagingId;
-
-      newLookupRow[IDX_LK.sourceItem] = r[IDX_STG.sourceItem];
-      newLookupRow[IDX_LK.sourceProduct] = r[IDX_STG.sourceProduct];
 
       newLookupRow[IDX_LK.notes] =
         `Promoted from staging → Staging_ID=${stagingId}`;
@@ -1047,7 +1036,6 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
     flushLogs_();
   }
 }
-
 
 
 /* 

@@ -177,6 +177,7 @@ function pipeline_transactions_(){
     /* --- STEP DEFINITIONS (ORDERED EXECUTION) --- */
     const steps = [
       backfillTxnIDs_TransactionRaw,
+      cleanupOrphan_TxnIDs_TransactionRaw,
       cleanupInvalidTransactions_TransactionRaw
     ];
 
