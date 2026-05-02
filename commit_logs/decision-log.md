@@ -233,3 +233,18 @@ apps_script/16_Mapping_Item_Brand_product.js
 **Decision:** NA
 **Next:** NA
 
+
+---
+
+## 2026-05-02 20:23
+
+**Commit Message:** fix(infra): Switched and connected backend to DEV sources
+
+**Files Changed:**
+apps_script/00_Project_Files.js
+
+
+**Problem:** NA
+**Decision:** NA
+**Next:** NA
+

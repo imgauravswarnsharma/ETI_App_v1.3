@@ -1,8 +1,7 @@
 /*
 -----------------------------------
 GENERIC FILE RESOLVER (FAST)
------------------------------------
-*/
+-----------------------------------*/
 
 function getSpreadsheetByName_(fileName){
 
@@ -26,8 +25,7 @@ function getSpreadsheetByName_(fileName){
 /*
 -----------------------------------
 METADATA
------------------------------------
-*/
+-----------------------------------*/
 
 function getMetadataSpreadsheet_(){
   return getSpreadsheetByName_('ETI_App_v1.3_Metadata_DEV');
@@ -37,8 +35,7 @@ function getMetadataSpreadsheet_(){
 /*
 -----------------------------------
 SUPPORT
------------------------------------
-*/
+-----------------------------------*/
 
 function getSupportSpreadsheet_(){
   return getSpreadsheetByName_('ETI_App_v1.3_Support_DEV');
@@ -48,8 +45,7 @@ function getSupportSpreadsheet_(){
 /*
 -----------------------------------
 LOGS
------------------------------------
-*/
+-----------------------------------*/
 
 function getLogsSpreadsheet_(){
   return getSpreadsheetByName_('ETI_App_v1.3_Logs_DEV');
