@@ -1,101 +1,57 @@
-// BRANDS: LOAD INTO STAGING
+/* 
+=========================================================
+FUNCTION: BRAND STAGING POPULATION
+=========================================================*/
 /**
  * Script Name: populateStagingLookupBrands_FromTransactionResolution
  * Script Language: Google Apps Script (JavaScript)
- * Version Introduced: v1.3
- * Current Status: ACTIVE
+ * App Version: v1.3
  *
- * Purpose:
- * - Populate Staging_Lookup_Brands with unresolved brand canonicals
- *   detected in Transaction_Resolution.
- * - Insert one staging row per unique canonical brand requiring governance review.
- * - Initialize staging rows with the default governance state ("Review").
- * - Include item and product context for governance visibility.
+ * PURPOSE:
+ * - Populate Staging_Lookup_Brands with unresolved Brand canonicals
+ * - Create one staging row per unique canonical requiring governance
+ * - Initialize rows with default governance state (Review)
+ * - Preserve Item + Product lineage context
  *
- * Preconditions:
- * - Sheet must exist: Transaction_Resolution
- * - Sheet must exist: Staging_Lookup_Brands
- * - Header row present in row 1
+ * PRECONDITIONS:
+ * - Sheet exists: Transaction_Resolution
+ * - Sheet exists: Staging_Lookup_Brands
+ * - Header row present (row 1)
+ * - Required columns exist in both sheets
  *
- * Required columns in Transaction_Resolution:
- *   - Txn_ID_Machine
- *   - Item_ID_Machine
- *   - Product_ID_Machine
- *   - Brand_ID_Machine
- *   - Item_Name_Entered
- *   - Product_Name_Entered
- *   - Brand_Name_Entered
- *   - Brand_Name_Canonical
+ * =========================================================
+ * EXECUTION FLOW
+ * =========================================================
+ * 1. Load staging sheet and build canonical dedupe set
+ * 2. Load transaction resolution data
+ * 3. Iterate transaction rows:
+ *    - Skip invalid / resolved / duplicate canonical rows
+ *    - Construct staging row
+ *    - Append to buffer
+ * 4. Batch append staging rows
+ * 5. Emit execution summary
  *
- * Required columns in Staging_Lookup_Brands:
- *   - Source_Item_Name
- *   - Source_Product_Name
- *   - Brand_Name_Entered
- *   - Brand_Name_Canonical
- *   - Brand_Name_Approved
- *   - Admin_Action
- *   - Is_Approved
- *   - Is_Active
- *   - Is_Archived
- *   - Is_Lookup_Promoted
- *   - Populated_At
- *   - Notes
- *   - Staging_Brand_ID_Machine
- *   - Mapped_Brand_ID_Machine
- *   - Source_Txn_ID_Machine
- *   - Source_Item_ID_Machine
- *   - Source_Product_ID_Machine
+ * =========================================================
+ * ALGORITHM (IMPLEMENTATION LOGIC)
+ * =========================================================
+ * - Process rows where:
+ *     - Txn_ID_Machine exists
+ *     - Brand_ID_Machine is empty
+ *     - Brand_Name_Canonical exists
+ *     - Canonical not already staged
+ * - Use Set() for canonical deduplication
+ * - Generate UUID for Staging_Brand_ID_Machine
+ * - Write rows in batch (append-only)
  *
- * Algorithm (Step-by-Step):
- *
- * 1. Load Staging_Lookup_Brands and read header row.
- * 2. Build in-memory Set of existing staged brand canonicals.
- * 3. Load Transaction_Resolution rows.
- * 4. Iterate rows:
- *
- *    Skip if:
- *      - Txn_ID_Machine missing
- *      - Brand_ID_Machine exists
- *      - Brand_Name_Canonical missing
- *      - canonical already staged
- *
- * 5. Create staging row:
- *
- *    Source_Item_Name
- *    Source_Product_Name
- *
- *    Brand_Name_Entered
- *    Brand_Name_Canonical
- *    Brand_Name_Approved
- *
- *    Admin_Action = Review
- *
- *    Is_Approved = FALSE
- *    Is_Active = FALSE
- *    Is_Archived = FALSE
- *    Is_Lookup_Promoted = FALSE
- *
- *    Source_Txn_ID_Machine
- *    Source_Item_ID_Machine
- *    Source_Product_ID_Machine
- *
- *    Staging_Brand_ID_Machine (UUID)
- *
- *    Populated_At
- *    Notes
- *
- * 6. Batch append rows.
- * 7. Emit execution summary.
- *
- * Failure Modes:
+ * FAILURE MODES:
  * - Required sheet missing
  * - Required column missing
- *
- * Reason for Deprecation:
- * - N/A
  */
+
+
 function populateStagingLookupBrands_FromTransactionResolution() {
 
+  /* --- FUNCTION-LEVEL CONSTANTS & STATE --- */
   const SCRIPT_NAME = 'Brands';
   const FUNCTION_NAME = 'populateStagingLookupBrands_FromTransactionResolution';
 
@@ -103,12 +59,15 @@ function populateStagingLookupBrands_FromTransactionResolution() {
   const TGT_SHEET = 'Staging_Lookup_Brands';
 
   const t0 = new Date();
+  let shouldExit = false;
 
+  /*
+  ============================================
+  CORE EXECUTION BLOCK
+  ============================================*/
   try {
 
-    /* =========================
-       START
-    ========================= */
+    /* --- INITIALIZATION --- */
     ETI_logStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -119,10 +78,8 @@ function populateStagingLookupBrands_FromTransactionResolution() {
       throw new Error('Required sheet not found');
     }
 
-    /* =========================
-       STEP — LOAD_STAGING
-    ========================= */
 
+    /* --- STEP: LOAD_STAGING --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_STAGING');
 
     const stgData = stgSh.getDataRange().getValues();
@@ -130,7 +87,6 @@ function populateStagingLookupBrands_FromTransactionResolution() {
     const stgCol = n => stgHdr.indexOf(n);
 
     const IDX_STG = {
-
       sourceItemName: stgCol('Source_Item_Name'),
       sourceProductName: stgCol('Source_Product_Name'),
 
@@ -156,10 +112,11 @@ function populateStagingLookupBrands_FromTransactionResolution() {
       sourceProduct: stgCol('Source_Product_ID_Machine')
     };
 
-    for (const [k,v] of Object.entries(IDX_STG)) {
+    for (const [k, v] of Object.entries(IDX_STG)) {
       if (v === -1) throw new Error(`Staging_Lookup_Brands missing column: ${k}`);
     }
 
+    // Build canonical set for deduplication
     const stagingCanonSet = new Set();
 
     for (let i = 1; i < stgData.length; i++) {
@@ -169,10 +126,8 @@ function populateStagingLookupBrands_FromTransactionResolution() {
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_STAGING');
 
-    /* =========================
-       STEP — LOAD_TXN
-    ========================= */
 
+    /* --- STEP: LOAD_TXN --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_TXN');
 
     const tsData = tsSh.getDataRange().getValues();
@@ -180,7 +135,6 @@ function populateStagingLookupBrands_FromTransactionResolution() {
     const tsCol = n => tsHdr.indexOf(n);
 
     const IDX = {
-
       txnId: tsCol('Txn_ID_Machine'),
       itemId: tsCol('Item_ID_Machine'),
       productId: tsCol('Product_ID_Machine'),
@@ -193,7 +147,7 @@ function populateStagingLookupBrands_FromTransactionResolution() {
       brandCanon: tsCol('Brand_Name_Canonical')
     };
 
-    for (const [k,v] of Object.entries(IDX)) {
+    for (const [k, v] of Object.entries(IDX)) {
       if (v === -1) {
         throw new Error(`Transaction_Resolution missing column: ${k}`);
       }
@@ -201,20 +155,20 @@ function populateStagingLookupBrands_FromTransactionResolution() {
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_TXN');
 
-    /* =========================
-       SKIP — NO DATA
-    ========================= */
 
+    /* --- VALIDATION: SOURCE DATA --- */
     if (tsData.length <= 1) {
       ETI_logSkip_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'SRC_Table contains no data rows. Verify!');
-
       ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
       return;
     }
 
-    /* =========================
-       PROCESS LOOP
-    ========================= */
+
+    /* 
+    ---------------------------------------------------------
+    PROCESS LOOP [STAGE NEW BRANDS]
+    --------------------------------------------------------- */
+    ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'STAGE NEW BRANDS');
 
     let scanned = 0;
     let skipNoTxn = 0;
@@ -230,11 +184,13 @@ function populateStagingLookupBrands_FromTransactionResolution() {
 
       const r = tsData[i];
 
+      // Skip rows without Txn_ID_Machine
       if (!r[IDX.txnId]) {
         skipNoTxn++;
         continue;
       }
 
+      // Skip rows already resolved at Brand level
       if (r[IDX.brandId]) {
         skipHasBrand++;
         continue;
@@ -242,16 +198,25 @@ function populateStagingLookupBrands_FromTransactionResolution() {
 
       const canon = r[IDX.brandCanon];
 
+      // Skip rows without Brand canonical
       if (!canon) {
         skipNoCanon++;
         continue;
       }
 
+      // Skip rows already staged (canonical-level dedupe)
       if (stagingCanonSet.has(canon)) {
         skipDuplicateCanon++;
         continue;
       }
 
+      /* --- SCHEDULER CHECK --- */
+      if (shouldExitForTimeout_(t0)) {
+        shouldExit = true;
+        break;
+      }
+
+      // Construct staging row
       const row = new Array(stgHdr.length).fill('');
 
       row[IDX_STG.sourceItemName] = r[IDX.itemName];
@@ -282,26 +247,20 @@ function populateStagingLookupBrands_FromTransactionResolution() {
       stagingCanonSet.add(canon);
     }
 
-    /* =========================
-       STEP — WRITE_OUTPUT
-    ========================= */
+    ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'STAGE NEW BRANDS');
 
+
+    /* --- STEP: WRITE_OUTPUT --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_OUTPUT');
 
     if (rowsToAppend.length > 0) {
-
       stgSh.getRange(
         stgSh.getLastRow() + 1,
         1,
         rowsToAppend.length,
         stgHdr.length
       ).setValues(rowsToAppend);
-
     } else {
-
-      /* =========================
-         STEP: NOTICE — NO INSERT
-      ========================= */
       ETI_logNotice_(
         SCRIPT_NAME,
         FUNCTION_NAME,
@@ -313,10 +272,8 @@ function populateStagingLookupBrands_FromTransactionResolution() {
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_OUTPUT');
 
-    /* =========================
-       SUMMARY
-    ========================= */
 
+    /* --- SUMMARY --- */
     const durationMs = new Date().getTime() - t0.getTime();
 
     ETI_logSummary_(
@@ -328,13 +285,28 @@ function populateStagingLookupBrands_FromTransactionResolution() {
       `DurationMs=${durationMs}`
     );
 
-    /* =========================
-       END
-    ========================= */
+
+    /* --- SCHEDULER EXIT --- */
+    if (shouldExit) {
+      return exitAndScheduleContinuation_(
+        SCRIPT_NAME,
+        FUNCTION_NAME,
+        {
+          pipelineName: getExecutionContext_()?.pipeline_name
+        }
+      );
+    }
 
     ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
 
-  } catch (err) {
+  }
+
+
+  /*
+  ============================================
+  ERROR BLOCK
+  ============================================*/
+  catch (err) {
 
     ETI_logError_(
       SCRIPT_NAME,
@@ -345,172 +317,135 @@ function populateStagingLookupBrands_FromTransactionResolution() {
     );
 
     throw err;
+  }
 
-  } finally {
+
+  /*
+  ============================================
+  FINALIZATION BLOCK
+  ============================================*/
+  finally {
 
     flushLogs_();
-
   }
 }
 
 
-
-
-
-// BRANDS: PROCESS STAGED BRANDS
+/* 
+=========================================================
+FUNCTION: BRAND STATE MACHINE PROCESSOR
+=========================================================
+*/
 /**
  * Script Name: processStagingBrands_StateMachine
  * Script Language: Google Apps Script (JavaScript)
- * Version Introduced: v1.3
- * Current Status: ACTIVE
+ * App Version: v1.3
  *
- * Purpose:
- * - Deterministically process governance state for Staging_Lookup_Brands.
- * - Repair any drift between Admin_Action and binary state flags.
- * - Derive all dependent columns directly in script (no formula reliance).
- * - Preserve audit trace of drift in Notes and ETI_log_.
+ * PURPOSE:
+ * - Enforce governance state machine on Staging_Lookup_Brands
+ * - Repair drift between Admin_Action and state flags
+ * - Derive all dependent governance columns deterministically
+ * - Maintain integrity audit trail
  *
- * Governance State Machine (Authoritative)
+ * PRECONDITIONS:
+ * - Sheet exists: Staging_Lookup_Brands
+ * - Required columns exist
  *
- * Admin_Action → Binary Flags → Derived State
+ * =========================================================
+ * EXECUTION FLOW
+ * =========================================================
+ * 1. Load staging data
+ * 2. Iterate rows:
+ *    - Resolve expected state from Admin_Action
+ *    - Repair drift in flags
+ *    - Validate state constraints
+ *    - Derive governance outputs
+ * 3. Write updated rows back
+ * 4. Emit summary + integrity logs
  *
- * Admin_Action                Is_Approved   Is_Active   Is_Archived
- * ------------------------------------------------------------------
- * Review                      FALSE         FALSE       FALSE
- * Activate                    FALSE         TRUE        FALSE
- * Approve (UI Hidden)         TRUE          FALSE       FALSE
- * Approve & Activate          TRUE          TRUE        FALSE
- * Approve but Deprecate       TRUE          FALSE       TRUE
- * Reject                      FALSE         FALSE       TRUE
+ * =========================================================
+ * ALGORITHM (IMPLEMENTATION LOGIC)
+ * =========================================================
+ * - Map Admin_Action → expected binary state
+ * - Repair mismatches (drift)
+ * - Validate:
+ *     - Not (Active AND Archived)
+ *     - Not (Promoted AND Not Approved)
+ * - Derive:
+ *     - Is_Pipeline_ready
+ *     - Action_Review_Status
+ *     - Brand_Status
+ *     - Entity_Owner
+ * - Mark row as VALID / REPAIRED / INVALID
  *
- *
- * Post Promotion (handled by promotion script)
- *
- * Is_Approved   Is_Active   Is_Archived   Is_Lookup_Promoted
- * -----------------------------------------------------------
- * TRUE          FALSE       TRUE          TRUE   → Promoted (Archived)
- * TRUE          FALSE       FALSE         TRUE   → Promoted (Hidden Dropdown)
- * TRUE          TRUE        FALSE         TRUE   → Promoted (Live)
- *
- *
- * Derived Columns
- *
- * Valid_State =
- * NOT(
- *   (Is_Active = TRUE AND Is_Archived = TRUE)
- *   OR
- *   (Is_Lookup_Promoted = TRUE AND Is_Approved = FALSE)
- * )
- *
- *
- * Is_Pipeline_ready =
- * Is_Approved
- * AND NOT Is_Lookup_Promoted
- * AND Valid_State
- *
- *
- * Action_Review_Status
- *
- * if Is_Lookup_Promoted → Promoted
- * else if Is_Approved → Pending (Promotion)
- * else if Is_Archived → Rejected
- * else → Pending (Approval)
- *
- *
- * Brand_Status
- *
- * If promoted:
- *   Approved + Active → Promoted (Live)
- *   Approved + Archived → Promoted (Archived)
- *   Approved only → Promoted (Hidden Dropdown)
- *
- * If not promoted:
- *   none → To be Reviewed
- *   active only → Active (Temporary)
- *   approved only → Approved (Hidden Dropdown)
- *   approved + active → Approved & Activated (Temporary)
- *   approved + archived → Approved (Archived)
- *   archived only → Rejected
- *
- *
- * Entity_Owner
- *
- * If Is_Lookup_Promoted → Lookup
- * Else → Staging
- *
- *
- * Integrity_Status
- *
- * VALID
- * REPAIRED
- * INVALID_STATE
- *
- *
- * Preconditions
- * - Sheet must exist: Staging_Lookup_Brands
- * - Sheet must exist: Automation_Control
- * - Integrity control switch: Automation_Control!K2
- *
- * Failure Modes
+ * FAILURE MODES:
  * - Required sheet missing
  * - Required column missing
  */
+
+
 function processStagingBrands_StateMachine() {
 
+  /* --- FUNCTION-LEVEL CONSTANTS & STATE --- */
   const SCRIPT_NAME = 'Brands';
   const FUNCTION_NAME = 'processStagingBrands_StateMachine';
   const SRC_SHEET = 'Staging_Lookup_Brands';
 
   const t0 = new Date();
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let shouldExit = false;
 
+
+  /*
+  ============================================
+  CORE EXECUTION BLOCK
+  ============================================*/
   try {
 
-    /* =========================
-       START
-    ========================= */
+    /* --- INITIALIZATION --- */
     ETI_logStart_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET);
 
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
     const stgSh = ss.getSheetByName(SRC_SHEET);
+
     if (!stgSh) throw new Error('Staging_Lookup_Brands sheet missing');
 
-    /* =========================
-       STEP — LOAD_DATA
-    ========================= */
 
+    /* --- STEP: LOAD_DATA --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'LOAD_DATA');
 
     const data = stgSh.getDataRange().getValues();
     const hdr = data[0];
-
     const col = n => hdr.indexOf(n);
 
     const IDX = {
       adminAction: col('Admin_Action'),
+
       isApproved: col('Is_Approved'),
       isActive: col('Is_Active'),
       isArchived: col('Is_Archived'),
       isPromoted: col('Is_Lookup_Promoted'),
+
       pipelineReady: col('Is_Pipeline_ready'),
       validState: col('Valid_State'),
+
       actionStatus: col('Action_Review_Status'),
       brandStatus: col('Brand_Status'),
+
       entityOwner: col('Entity_Owner'),
       integrity: col('Integrity_Status'),
+
       notes: col('Notes'),
       stagingId: col('Staging_Brand_ID_Machine')
     };
 
-    for (const [k,v] of Object.entries(IDX)) {
+    for (const [k, v] of Object.entries(IDX)) {
       if (v === -1) throw new Error(`Missing column: ${k}`);
     }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'LOAD_DATA');
 
-    /* =========================
-       STEP — DRIFT_REPAIR
-    ========================= */
 
+    /* --- STEP: DRIFT_REPAIR --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'DRIFT_REPAIR');
 
     let repaired = 0;
@@ -523,24 +458,32 @@ function processStagingBrands_StateMachine() {
       "EEEE, MMMM d, yyyy 'at' HH:mm:ss"
     );
 
+
+    /* 
+    ---------------------------------------------------------
+    PROCESS LOOP [STATE TRANSITION + DRIFT REPAIR]
+    --------------------------------------------------------- */
     for (let i = 1; i < data.length; i++) {
 
       const row = data[i];
       const admin = row[IDX.adminAction];
       const stagingId = row[IDX.stagingId];
 
+      // Skip rows without Admin_Action
       if (!admin) continue;
 
-      let expected = {
-        approved:false,
-        active:false,
-        archived:false
-      };
+      /* --- SCHEDULER CHECK --- */
+      if (shouldExitForTimeout_(t0)) {
+        shouldExit = true;
+        break;
+      }
 
-      switch(admin) {
+      // Map Admin_Action → expected governance state
+      let expected = { approved: false, active: false, archived: false };
 
-        case 'Review':
-          break;
+      switch (admin) {
+
+        case 'Review': break;
 
         case 'Activate':
           expected.active = true;
@@ -572,10 +515,10 @@ function processStagingBrands_StateMachine() {
 
       let drift = [];
 
+      // Repair drift in governance flags
       function repair(idx, expectedVal, name) {
-        const actual = row[idx];
-        if (actual !== expectedVal) {
-          drift.push(`${name} expected=${expectedVal} found=${actual}`);
+        if (row[idx] !== expectedVal) {
+          drift.push(`${name} expected=${expectedVal} found=${row[idx]}`);
           row[idx] = expectedVal;
         }
       }
@@ -584,6 +527,8 @@ function processStagingBrands_StateMachine() {
       repair(IDX.isActive, expected.active, 'Is_Active');
       repair(IDX.isArchived, expected.archived, 'Is_Archived');
 
+
+      // Validate state constraints
       const promoted = row[IDX.isPromoted];
 
       const validState =
@@ -598,50 +543,41 @@ function processStagingBrands_StateMachine() {
         continue;
       }
 
-      const pipelineReady =
-        row[IDX.isApproved] &&
-        !promoted &&
-        validState;
 
-      row[IDX.pipelineReady] = pipelineReady;
+      /* --- DERIVE GOVERNANCE FIELDS --- */
 
-      let reviewStatus = 'Pending (Approval)';
+      // Pipeline readiness
+      row[IDX.pipelineReady] =
+        row[IDX.isApproved] && !promoted && validState;
 
-      if (promoted) reviewStatus = 'Promoted';
-      else if (row[IDX.isApproved]) reviewStatus = 'Pending (Promotion)';
-      else if (row[IDX.isArchived]) reviewStatus = 'Rejected';
+      // Review status
+      row[IDX.actionStatus] =
+        promoted ? 'Promoted' :
+        row[IDX.isApproved] ? 'Pending (Promotion)' :
+        row[IDX.isArchived] ? 'Rejected' :
+        'Pending (Approval)';
 
-      row[IDX.actionStatus] = reviewStatus;
-
+      // Brand status derivation
       let brandStatus = 'To be Reviewed';
 
       if (promoted) {
-
-        if (row[IDX.isActive])
-          brandStatus = 'Promoted (Live)';
-        else if (row[IDX.isArchived])
-          brandStatus = 'Promoted (Archived)';
-        else
-          brandStatus = 'Promoted (Hidden Dropdown)';
-
+        if (row[IDX.isActive]) brandStatus = 'Promoted (Live)';
+        else if (row[IDX.isArchived]) brandStatus = 'Promoted (Archived)';
+        else brandStatus = 'Promoted (Hidden Dropdown)';
       } else {
-
-        if (row[IDX.isArchived] && !row[IDX.isApproved])
-          brandStatus = 'Rejected';
-        else if (row[IDX.isActive] && !row[IDX.isApproved])
-          brandStatus = 'Active (Temporary)';
-        else if (row[IDX.isApproved] && !row[IDX.isActive])
-          brandStatus = 'Approved (Hidden Dropdown)';
-        else if (row[IDX.isApproved] && row[IDX.isActive])
-          brandStatus = 'Approved & Activated (Temporary)';
-        else if (row[IDX.isApproved] && row[IDX.isArchived])
-          brandStatus = 'Approved (Archived)';
+        if (row[IDX.isArchived] && !row[IDX.isApproved]) brandStatus = 'Rejected';
+        else if (row[IDX.isActive] && !row[IDX.isApproved]) brandStatus = 'Active (Temporary)';
+        else if (row[IDX.isApproved] && !row[IDX.isActive]) brandStatus = 'Approved (Hidden Dropdown)';
+        else if (row[IDX.isApproved] && row[IDX.isActive]) brandStatus = 'Approved & Activated (Temporary)';
+        else if (row[IDX.isApproved] && row[IDX.isArchived]) brandStatus = 'Approved (Archived)';
       }
 
       row[IDX.brandStatus] = brandStatus;
 
       row[IDX.entityOwner] = promoted ? 'Lookup' : 'Staging';
 
+
+      // Logging + integrity tagging
       if (drift.length > 0) {
 
         repaired++;
@@ -671,38 +607,31 @@ function processStagingBrands_StateMachine() {
       }
     }
 
-    /* =========================
-       NOTICE — NO DRIFT / NO INVALID
-    ========================= */
 
+    // No-op notice
     if (repaired === 0 && invalid === 0) {
       ETI_logNotice_(
         SCRIPT_NAME,
         FUNCTION_NAME,
         SRC_SHEET,
         'DRIFT_REPAIR',
-        'No drift detected; all rows valid'
+        'No drift detected'
       );
     }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'DRIFT_REPAIR');
 
-    /* =========================
-       STEP — WRITE_BACK
-    ========================= */
 
+    /* --- STEP: WRITE_BACK --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'WRITE_BACK');
 
-    stgSh
-      .getRange(2,1,data.length-1,hdr.length)
+    stgSh.getRange(2, 1, data.length - 1, hdr.length)
       .setValues(data.slice(1));
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'WRITE_BACK');
 
-    /* =========================
-       SUMMARY
-    ========================= */
 
+    /* --- SUMMARY --- */
     const durationMs = new Date().getTime() - t0.getTime();
 
     ETI_logSummary_(
@@ -712,13 +641,28 @@ function processStagingBrands_StateMachine() {
       `Valid=${valid}, Repaired=${repaired}, Invalid=${invalid}, DurationMs=${durationMs}`
     );
 
-    /* =========================
-       END
-    ========================= */
+
+    /* --- SCHEDULER EXIT --- */
+    if (shouldExit) {
+      return exitAndScheduleContinuation_(
+        SCRIPT_NAME,
+        FUNCTION_NAME,
+        {
+          pipelineName: getExecutionContext_()?.pipeline_name
+        }
+      );
+    }
 
     ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET);
 
-  } catch (err) {
+  }
+
+
+  /*
+  ============================================
+  ERROR BLOCK
+  ============================================*/
+  catch (err) {
 
     ETI_logError_(
       SCRIPT_NAME,
@@ -729,125 +673,100 @@ function processStagingBrands_StateMachine() {
     );
 
     throw err;
+  }
 
-  } finally {
+
+  /*
+  ============================================
+  FINALIZATION BLOCK
+  ============================================*/
+  finally {
 
     flushLogs_();
-
   }
 }
 
 
-
-
-
-// BRANDS: PROMOTE ACTIONED BRANDS TO LOOKUP
+/* 
+=========================================================
+FUNCTION: BRAND PROMOTION TO LOOKUP
+=========================================================
+*/
 /**
  * Script Name: promoteApprovedBrands_FromStaging_ToLookup
  * Script Language: Google Apps Script (JavaScript)
- * Version Introduced: v1.3
- * Current Status: ACTIVE
+ * App Version: v1.3
  *
- * Purpose:
- * - Promote approved staging brand rows into Lookup_Brands exactly once
- * - Promotion authority = staging row (not canonical, not name)
- * - Record lineage via Is_Staging_Promoted (Lookup_Brands)
- * - Record completion via Is_Lookup_Promoted (Staging_Lookup_Brands)
- * - Preserve auditability and forward-only identity guarantees (ETI v1.3)
+ * PURPOSE:
+ * - Promote approved staging brands into Lookup_Brands
+ * - Maintain one-time promotion guarantee
+ * - Preserve lineage via Staging_Brand_ID_Machine
+ * - Update staging row with promotion metadata
  *
- * Preconditions:
- * - Sheets must exist:
+ * PRECONDITIONS:
+ * - Sheets exist:
  *   - Staging_Lookup_Brands
  *   - Lookup_Brands
- * - Header row must exist in row 1
- * - Required columns must exist (header-based, order-independent)
- * - Flags Is_Lookup_Promoted and Is_Staging_Promoted are script-owned
+ * - Required columns exist
  *
- * Algorithm (Step-by-Step):
- * 1. Generate a unique Execution_ID for traceability.
- * 2. Load Lookup_Brands and resolve column indexes via headers.
- * 3. Load Staging_Lookup_Brands and resolve column indexes via headers.
- * 4. Iterate each staging row:
- *    a. Skip if Is_Approved ≠ TRUE.
- *    b. Skip if Is_Lookup_Promoted = TRUE (hard stop).
- *    c. Resolve final brand name (Brand_Name_Approved → fallback Brand_Name_Entered).
- *    d. Generate full UUID for Brand_ID_Machine.
- *    e. Construct a new Lookup_Brands row using header-indexed placement.
- *    f. Mark Is_Staging_Promoted = TRUE in Lookup_Brands.
- *    g. Write back Mapped_Brand_ID_Machine, Is_Lookup_Promoted = TRUE,
- *       and contextual Notes into Staging_Lookup_Brands.
- * 5. Batch-append all new Lookup_Brands rows.
- * 6. Write back all staging updates.
- * 7. Emit execution summary and completion logs.
+ * =========================================================
+ * EXECUTION FLOW
+ * =========================================================
+ * 1. Load lookup and staging data
+ * 2. Iterate staging rows:
+ *    - Validate promotion eligibility
+ *    - Generate Brand_ID_Machine
+ *    - Create lookup row
+ *    - Prepare staging update
+ * 3. Batch append lookup rows
+ * 4. Apply staging updates
+ * 5. Emit summary
  *
- * 
- *  * Purpose:
- * - Promote staging brands into Lookup_Brands once governance conditions are satisfied
- * - Maintain deterministic promotion authority
- * - Preserve lineage via Staging_Brand_ID_Machine
- * - Provide full action-level logging for debugging
+ * =========================================================
+ * ALGORITHM (IMPLEMENTATION LOGIC)
+ * =========================================================
+ * - Promote only when:
+ *     - Action_Review_Status = Pending (Promotion)
+ *     - Is_Pipeline_ready = TRUE
+ *     - Is_Lookup_Promoted = FALSE
+ * - Resolve name:
+ *     - Approved → fallback Entered
+ * - Generate UUID for Brand_ID_Machine
+ * - Write lookup + staging updates
  *
- * Promotion Gate (ALL must be true):
- *
- *   Action_Review_Status = "Pending (Promotion)"
- *   Is_Pipeline_ready    = TRUE
- *   Is_Lookup_Promoted   = FALSE
- *
- * Promotion Results:
- *
- * Lookup_Brands row inserted
- * Staging row updated with:
- *
- *   Mapped_Brand_ID_Machine
- *   Is_Lookup_Promoted
- *   Action_Review_Status
- *   Entity_Owner
- *   Promotion_Label
- *   Promoted_At
- *   Brand_Status
- *   Notes
- *
- * Failure Modes:
- * - Missing required sheet
- * - Missing required column
- *
- * Reason for Deprecation (if applicable):
- * - N/A
- * - This script remains ACTIVE for ETI v1.3.
- * - Superseded only in v1.4 if identity reconciliation
- *   or brand-merge workflows are introduced.
+ * FAILURE MODES:
+ * - Required sheet missing
+ * - Required column missing
  */
 function promoteApprovedBrands_FromStaging_ToLookup() {
 
-  /* =========================
-     CONFIG / CONSTANTS
-  ========================= */
+  /* --- FUNCTION-LEVEL CONSTANTS & STATE --- */
   const SCRIPT_NAME  = 'Brands';
   const FUNCTION_NAME = 'promoteApprovedBrands_FromStaging_ToLookup';
-  const SRC_SHEET = 'Staging_Lookup_Brands';
-  const TGT_SHEET = 'Lookup_Brands';
+  const SRC_SHEET    = 'Staging_Lookup_Brands';
+  const TGT_SHEET    = 'Lookup_Brands';
 
   const t0 = new Date();
+  let shouldExit = false;
 
+
+  /*
+  ============================================
+  CORE EXECUTION BLOCK
+  ============================================*/
   try {
 
-    /* =========================
-       START
-    ========================= */
+    /* --- INITIALIZATION --- */
     ETI_logStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
 
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const ss    = SpreadsheetApp.getActiveSpreadsheet();
     const stgSh = ss.getSheetByName(SRC_SHEET);
     const lkSh  = ss.getSheetByName(TGT_SHEET);
 
-    if (!stgSh || !lkSh) {
-      throw new Error('Required sheet not found');
-    }
+    if (!stgSh || !lkSh) throw new Error('Required sheet not found');
 
-    /* =========================
-       STEP — LOAD_LOOKUP
-    ========================= */
 
+    /* --- STEP: LOAD_LOOKUP --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_LOOKUP');
 
     const lkData = lkSh.getDataRange().getValues();
@@ -857,16 +776,22 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
     const IDX_LK = {
       brandName: lkCol('Brand_Name'),
       brandCanon: lkCol('Brand_Name_Canonical'),
+
       isApproved: lkCol('Is_Approved'),
       isActive: lkCol('Is_Active'),
       isArchived: lkCol('Is_Archived'),
-      brandStatus: lkCol('Brand_Status'),
+
       isStgPromoted: lkCol('Is_Staging_Promoted'),
       sourceType: lkCol('Source_Type'),
+
       createdAt: lkCol('Created_At'),
       notes: lkCol('Notes'),
+
       brandIdMachine: lkCol('Brand_ID_Machine'),
-      stagingId: lkCol('Staging_Brand_ID_Machine')
+      stagingId: lkCol('Staging_ID_Machine'),
+
+      sourceItem: lkCol('Source_Item_ID_Machine'),
+      sourceProduct: lkCol('Source_Product_ID_Machine')
     };
 
     for (const [k,v] of Object.entries(IDX_LK)) {
@@ -875,10 +800,8 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_LOOKUP');
 
-    /* =========================
-       STEP — LOAD_STAGING
-    ========================= */
 
+    /* --- STEP: LOAD_STAGING --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_STAGING');
 
     const stgData = stgSh.getDataRange().getValues();
@@ -889,19 +812,27 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
       entered: stgCol('Brand_Name_Entered'),
       approved: stgCol('Brand_Name_Approved'),
       canon: stgCol('Brand_Name_Canonical'),
+
       reviewStatus: stgCol('Action_Review_Status'),
       pipelineReady: stgCol('Is_Pipeline_ready'),
       isPromoted: stgCol('Is_Lookup_Promoted'),
+
       stagingId: stgCol('Staging_Brand_ID_Machine'),
       mappedId: stgCol('Mapped_Brand_ID_Machine'),
+
       notes: stgCol('Notes'),
+
       isApproved: stgCol('Is_Approved'),
       isActive: stgCol('Is_Active'),
       isArchived: stgCol('Is_Archived'),
+
       entityOwner: stgCol('Entity_Owner'),
       promotionLabel: stgCol('Promotion_Label'),
       promotedAt: stgCol('Promoted_At'),
-      brandStatus: stgCol('Brand_Status')
+      brandStatus: stgCol('Brand_Status'),
+
+      sourceItem: stgCol('Source_Item_ID_Machine'),
+      sourceProduct: stgCol('Source_Product_ID_Machine')
     };
 
     for (const [k,v] of Object.entries(IDX_STG)) {
@@ -910,10 +841,19 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_STAGING');
 
-    /* =========================
-       STEP — PROMOTION
-    ========================= */
 
+    /* --- VALIDATION: SOURCE DATA --- */
+    if (stgData.length <= 1) {
+      ETI_logSkip_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'No data rows found');
+      ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
+      return;
+    }
+
+
+    /*
+    ---------------------------------------------------------
+    PROCESS LOOP [PROMOTE APPROVED BRANDS]
+    --------------------------------------------------------- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'PROMOTION');
 
     let scanned = 0;
@@ -930,39 +870,55 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
       const rowNum = i + 1;
       const r = stgData[i];
 
+      // Eligibility: only rows ready for promotion
       if (r[IDX_STG.reviewStatus] !== 'Pending (Promotion)') { skipped++; continue; }
-      if (r[IDX_STG.pipelineReady] !== true) { skipped++; continue; }
+      if (!r[IDX_STG.pipelineReady]) { skipped++; continue; }
       if (r[IDX_STG.isPromoted] === true) { skipped++; continue; }
 
-      const finalName =
-        r[IDX_STG.approved] ||
-        r[IDX_STG.entered];
-
+      // Resolve final Brand name
+      const finalName = r[IDX_STG.approved] || r[IDX_STG.entered];
       if (!finalName) { skipped++; continue; }
+
+      /* --- SCHEDULER CHECK --- */
+      if (shouldExitForTimeout_(t0)) {
+        shouldExit = true;
+        break;
+      }
 
       const canon = r[IDX_STG.canon] || '';
       const stagingId = r[IDX_STG.stagingId];
 
+      // Generate unique Brand_ID_Machine (UUID)
       const brandIdMachine = Utilities.getUuid();
 
+      // Construct lookup row
       const newLookupRow = new Array(lkHdr.length).fill('');
 
       newLookupRow[IDX_LK.brandName] = finalName;
       newLookupRow[IDX_LK.brandCanon] = canon;
+
       newLookupRow[IDX_LK.isApproved] = r[IDX_STG.isApproved];
       newLookupRow[IDX_LK.isActive]   = r[IDX_STG.isActive];
       newLookupRow[IDX_LK.isArchived] = r[IDX_STG.isArchived];
-      newLookupRow[IDX_LK.brandStatus] = r[IDX_STG.brandStatus];
+
       newLookupRow[IDX_LK.isStgPromoted] = true;
       newLookupRow[IDX_LK.sourceType] = 'STAGING_PROMOTION';
+
       newLookupRow[IDX_LK.createdAt] = new Date();
+
       newLookupRow[IDX_LK.brandIdMachine] = brandIdMachine;
       newLookupRow[IDX_LK.stagingId] = stagingId;
+
+      newLookupRow[IDX_LK.sourceItem] = r[IDX_STG.sourceItem];
+      newLookupRow[IDX_LK.sourceProduct] = r[IDX_STG.sourceProduct];
+
       newLookupRow[IDX_LK.notes] =
         `Promoted from staging → Staging_ID=${stagingId}`;
 
       lookupAppendRows.push(newLookupRow);
 
+
+      // Prepare staging update
       let promotedStatus = '';
 
       if (r[IDX_STG.isApproved] && r[IDX_STG.isArchived])
@@ -985,13 +941,12 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
         status: promotedStatus
       });
 
-      /* =========================
-         LOG PER ROW
-      ========================= */
+
+      // Log promotion event
       ETI_log_({
         scriptName: SCRIPT_NAME,
         functionName: FUNCTION_NAME,
-        sheetName: TGT_SHEET,   
+        sheetName: TGT_SHEET,
         level: 'INFO',
         action: 'PROCESS',
         stepName: 'PROMOTION',
@@ -1002,10 +957,7 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
       promoted++;
     }
 
-    /* =========================
-       NOTICE — NO PROMOTION
-    ========================= */
-
+    // No-op notice
     if (promoted === 0) {
       ETI_logNotice_(
         SCRIPT_NAME,
@@ -1018,10 +970,8 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'PROMOTION');
 
-    /* =========================
-       STEP — WRITE_LOOKUP
-    ========================= */
 
+    /* --- STEP: WRITE_LOOKUP --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_LOOKUP');
 
     if (lookupAppendRows.length > 0) {
@@ -1035,14 +985,11 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_LOOKUP');
 
-    /* =========================
-       STEP — WRITE_BACK_STAGING
-    ========================= */
 
+    /* --- STEP: WRITE_BACK_STAGING --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_BACK_STAGING');
 
     for (const u of stagingUpdates) {
-
       stgSh.getRange(u.row, IDX_STG.mappedId + 1).setValue(u.mappedId);
       stgSh.getRange(u.row, IDX_STG.isPromoted + 1).setValue(true);
       stgSh.getRange(u.row, IDX_STG.reviewStatus + 1).setValue('Promoted');
@@ -1055,10 +1002,8 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_BACK_STAGING');
 
-    /* =========================
-       SUMMARY
-    ========================= */
 
+    /* --- SUMMARY --- */
     const durationMs = new Date().getTime() - t0.getTime();
 
     ETI_logSummary_(
@@ -1068,81 +1013,98 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
       `Scanned=${scanned}, Promoted=${promoted}, Skipped=${skipped}, DurationMs=${durationMs}`
     );
 
-    /* =========================
-       END
-    ========================= */
+
+    /* --- SCHEDULER EXIT --- */
+    if (shouldExit) {
+      return exitAndScheduleContinuation_(
+        SCRIPT_NAME,
+        FUNCTION_NAME,
+        {
+          pipelineName: getExecutionContext_()?.pipeline_name
+        }
+      );
+    }
 
     ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
+  }
 
-  } catch (err) {
 
-    ETI_logError_(
-      SCRIPT_NAME,
-      FUNCTION_NAME,
-      TGT_SHEET,
-      err,
-      'MAIN'
-    );
-
+  /*
+  ============================================
+  ERROR BLOCK
+  ============================================*/
+  catch (err) {
+    ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, err, 'MAIN');
     throw err;
+  }
 
-  } finally {
 
+  /*
+  ============================================
+  FINALIZATION BLOCK
+  ============================================*/
+  finally {
     flushLogs_();
-
   }
 }
 
 
 
-
-
-// BRANDS: LOOKUP - BACKFILL BACKEND-SEEDED(MANUALLY) IDs FOR BRAND RECORDS
+/* 
+=========================================================
+FUNCTION: BRAND ID BACKFILL
+=========================================================
+*/
 /**
  * Script Name: backfill_BrandIDs_Machine_LookupBrands
  * Script Language: Google Apps Script (JavaScript)
- * Version Introduced: v1.3
- * Current Status: ACTIVE
+ * App Version: v1.3
  *
- * Purpose:
- * - Backfill Brand_ID_Machine where Brand_Name exists and ID is missing
+ * PURPOSE:
+ * - Assign Brand_ID_Machine where missing
  *
- * Preconditions:
- * - Spreadsheet contains a sheet named: Lookup_Brands
- * - Header row present in row 1
- * - Required columns:
- *   - Brand_Name
- *   - Brand_ID_Machine
+ * PRECONDITIONS:
+ * - Sheet exists: Lookup_Brands
+ * - Required columns exist
  *
- * Algorithm:
- * 1. Generate Execution_ID
- * 2. Load Lookup_Brands
- * 3. Resolve column indexes
- * 4. For each row:
- *    a. If Brand_Name exists AND Brand_ID_Machine is blank → generate UUID
- * 5. Write changes in one batch
+ * =========================================================
+ * EXECUTION FLOW
+ * =========================================================
+ * 1. Load lookup data
+ * 2. Iterate rows:
+ *    - If Brand_Name exists and ID missing → generate UUID
+ * 3. Batch write updates
  *
- * Failure Modes:
+ * =========================================================
+ * ALGORITHM (IMPLEMENTATION LOGIC)
+ * =========================================================
+ * - Condition:
+ *     Brand_Name present AND Brand_ID_Machine empty
+ * - Generate UUID
+ * - Write in-memory → batch update
+ *
+ * FAILURE MODES:
  * - Sheet missing
- * - Required column missing
- *
- * Reason for Deprecation:
- * - N/A
+ * - Column missing
  */
 function backfill_BrandIDs_Machine_LookupBrands() {
 
-  /* =========================
-     CONFIG / CONSTANTS
-  ========================= */
+  /* --- FUNCTION-LEVEL CONSTANTS & STATE --- */
   const SCRIPT_NAME  = 'Brands';
   const FUNCTION_NAME = 'backfill_BrandIDs_Machine_LookupBrands';
   const SHEET_NAME   = 'Lookup_Brands';
 
+  const t0 = new Date();
+  let shouldExit = false;
+
+
+  /*
+  ============================================
+  CORE EXECUTION BLOCK
+  ============================================*/
   try {
 
-    /* =========================
-       START
-    ========================= */
+    /* --- INITIALIZATION --- */
     ETI_logStart_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME);
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1152,9 +1114,8 @@ function backfill_BrandIDs_Machine_LookupBrands() {
     const range = sh.getDataRange();
     const data  = range.getValues();
 
-    /* =========================
-       SKIP: NO DATA
-    ========================= */
+
+    /* --- VALIDATION: DATA PRESENCE --- */
     if (data.length < 2) {
 
       ETI_logSkip_(
@@ -1168,9 +1129,8 @@ function backfill_BrandIDs_Machine_LookupBrands() {
       return;
     }
 
-    /* =========================
-       HEADER MAPPING
-    ========================= */
+
+    /* --- HEADER RESOLUTION --- */
     const header = data[0];
     const col = n => header.indexOf(n);
 
@@ -1183,10 +1143,11 @@ function backfill_BrandIDs_Machine_LookupBrands() {
       if (v === -1) throw new Error(`Missing required column: ${k}`);
     }
 
-    /* =========================
-       STEP — GENERATE_ID
-    ========================= */
 
+    /*
+    ---------------------------------------------------------
+    PROCESS LOOP [GENERATE BRAND IDs]
+    --------------------------------------------------------- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME, 'GENERATE_ID');
 
     let generatedCount = 0;
@@ -1198,32 +1159,35 @@ function backfill_BrandIDs_Machine_LookupBrands() {
       const name     = output[i][IDX.brandName];
       const brandId  = output[i][IDX.brandIdM];
 
-      if (name && !brandId) {
+      // Skip rows without Brand_Name or already assigned Brand_ID_Machine
+      if (!(name && !brandId)) continue;
 
-        const newId = Utilities.getUuid();
-        output[i][IDX.brandIdM] = newId;
-        generatedCount++;
-
-        /* =========================
-           LOG PER ROW
-        ========================= */
-        ETI_log_({
-          scriptName: SCRIPT_NAME,
-          functionName: FUNCTION_NAME,
-          sheetName: SHEET_NAME,
-          level: 'INFO',
-          rowNumber: rowNum,
-          action: 'PROCESS',
-          stepName: 'GENERATE_ID',
-          details: `Generated Brand_ID_Machine: ${newId}`
-        });
+      /* --- SCHEDULER CHECK --- */
+      if (shouldExitForTimeout_(t0)) {
+        shouldExit = true;
+        break;
       }
+
+      // Generate unique Brand_ID_Machine (UUID)
+      const newId = Utilities.getUuid();
+      output[i][IDX.brandIdM] = newId;
+      generatedCount++;
+
+      // Log mutation
+      ETI_log_({
+        scriptName: SCRIPT_NAME,
+        functionName: FUNCTION_NAME,
+        sheetName: SHEET_NAME,
+        level: 'INFO',
+        rowNumber: rowNum,
+        action: 'PROCESS',
+        stepName: 'GENERATE_ID',
+        details: `Generated Brand_ID_Machine: ${newId}`
+      });
     }
 
-    /* =========================
-       NOTICE — NO GENERATION
-    ========================= */
 
+    /* --- NOTICE: NO GENERATION --- */
     if (generatedCount === 0) {
       ETI_logNotice_(
         SCRIPT_NAME,
@@ -1236,14 +1200,17 @@ function backfill_BrandIDs_Machine_LookupBrands() {
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME, 'GENERATE_ID');
 
-    /* =========================
-       WRITE BACK
-    ========================= */
+
+    /* --- STEP: WRITE_BACK --- */
+    ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME, 'WRITE_BACK');
+
+    // Write full dataset back (single batch write)
     range.setValues(output);
 
-    /* =========================
-       SUMMARY
-    ========================= */
+    ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME, 'WRITE_BACK');
+
+
+    /* --- SUMMARY --- */
     ETI_logSummary_(
       SCRIPT_NAME,
       FUNCTION_NAME,
@@ -1251,12 +1218,28 @@ function backfill_BrandIDs_Machine_LookupBrands() {
       `Generated=${generatedCount}`
     );
 
-    /* =========================
-       END
-    ========================= */
+
+    /* --- SCHEDULER EXIT --- */
+    if (shouldExit) {
+      return exitAndScheduleContinuation_(
+        SCRIPT_NAME,
+        FUNCTION_NAME,
+        {
+          pipelineName: getExecutionContext_()?.pipeline_name
+        }
+      );
+    }
+
     ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME);
 
-  } catch (err) {
+  }
+
+
+  /*
+  ============================================
+  ERROR BLOCK
+  ============================================*/
+  catch (err) {
 
     ETI_logError_(
       SCRIPT_NAME,
@@ -1267,64 +1250,77 @@ function backfill_BrandIDs_Machine_LookupBrands() {
     );
 
     throw err;
+  }
 
-  } finally {
+
+  /*
+  ============================================
+  FINALIZATION BLOCK
+  ============================================*/
+  finally {
 
     flushLogs_();
-
   }
 }
 
 
 
-
-
-// BRANDS: LOOKUP - CLEANUP OF INVALID RECORDS
+/* 
+=========================================================
+FUNCTION: BRAND ID CLEANUP
+=========================================================
+*/
 /**
  * Script Name: cleanupOrphan_BrandIDs_Machine_LookupBrands
  * Script Language: Google Apps Script (JavaScript)
- * Version Introduced: v1.3
- * Current Status: ACTIVE
+ * App Version: v1.3
  *
- * Purpose:
- * - Clear orphan Brand_ID_Machine where Brand_Name is missing
+ * PURPOSE:
+ * - Remove orphan Brand_ID_Machine values
  *
- * Preconditions:
- * - Spreadsheet contains a sheet named: Lookup_Brands
- * - Header row present in row 1
- * - Required columns:
- *   - Brand_Name
- *   - Brand_ID_Machine
+ * PRECONDITIONS:
+ * - Sheet exists: Lookup_Brands
+ * - Required columns exist
  *
- * Algorithm:
- * 1. Generate Execution_ID
- * 2. Load Lookup_Brands
- * 3. Resolve column indexes
- * 4. For each row:
- *    a. If Brand_Name is blank AND Brand_ID_Machine exists → clear ID
- * 5. Write changes in one batch
+ * =========================================================
+ * EXECUTION FLOW
+ * =========================================================
+ * 1. Load lookup data
+ * 2. Iterate rows:
+ *    - If Brand_Name missing AND ID exists → clear ID
+ * 3. Batch write updates
  *
- * Failure Modes:
+ * =========================================================
+ * ALGORITHM (IMPLEMENTATION LOGIC)
+ * =========================================================
+ * - Condition:
+ *     Brand_Name empty AND Brand_ID_Machine exists
+ * - Clear ID
+ *
+ * FAILURE MODES:
  * - Sheet missing
- * - Required column missing
- *
- * Reason for Deprecation:
- * - N/A
+ * - Column missing
  */
+
+
 function cleanupOrphan_BrandIDs_Machine_LookupBrands() {
 
-  /* =========================
-     CONFIG / CONSTANTS
-  ========================= */
+  /* --- FUNCTION-LEVEL CONSTANTS & STATE --- */
   const SCRIPT_NAME  = 'Brands';
   const FUNCTION_NAME = 'cleanupOrphan_BrandIDs_Machine_LookupBrands';
   const SHEET_NAME   = 'Lookup_Brands';
 
+  const t0 = new Date();
+  let shouldExit = false;
+
+
+  /*
+  ============================================
+  CORE EXECUTION BLOCK
+  ============================================*/
   try {
 
-    /* =========================
-       START
-    ========================= */
+    /* --- INITIALIZATION --- */
     ETI_logStart_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME);
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1334,9 +1330,8 @@ function cleanupOrphan_BrandIDs_Machine_LookupBrands() {
     const range = sh.getDataRange();
     const data  = range.getValues();
 
-    /* =========================
-       SKIP: NO DATA
-    ========================= */
+
+    /* --- VALIDATION: DATA PRESENCE --- */
     if (data.length < 2) {
 
       ETI_logSkip_(
@@ -1350,9 +1345,8 @@ function cleanupOrphan_BrandIDs_Machine_LookupBrands() {
       return;
     }
 
-    /* =========================
-       HEADER MAPPING
-    ========================= */
+
+    /* --- HEADER RESOLUTION --- */
     const header = data[0];
     const col = n => header.indexOf(n);
 
@@ -1365,10 +1359,11 @@ function cleanupOrphan_BrandIDs_Machine_LookupBrands() {
       if (v === -1) throw new Error(`Missing required column: ${k}`);
     }
 
-    /* =========================
-       STEP — CLEANUP_ORPHAN_ID
-    ========================= */
 
+    /*
+    ---------------------------------------------------------
+    PROCESS LOOP [CLEAR ORPHAN BRAND IDs]
+    --------------------------------------------------------- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME, 'CLEANUP_ORPHAN_ID');
 
     let clearedCount = 0;
@@ -1376,35 +1371,38 @@ function cleanupOrphan_BrandIDs_Machine_LookupBrands() {
 
     for (let i = 1; i < output.length; i++) {
 
-      const rowNum  = i + 1;
-      const name    = output[i][IDX.brandName];
+      const rowNum = i + 1;
+      const name   = output[i][IDX.brandName];
       const brandId = output[i][IDX.brandIdM];
 
-      if (!name && brandId) {
+      // Skip rows that are not orphan (valid name or no ID)
+      if (!( !name && brandId )) continue;
 
-        output[i][IDX.brandIdM] = '';
-        clearedCount++;
-
-        /* =========================
-           LOG PER ROW
-        ========================= */
-        ETI_log_({
-          scriptName: SCRIPT_NAME,
-          functionName: FUNCTION_NAME,
-          sheetName: SHEET_NAME,
-          level: 'WARN',
-          rowNumber: rowNum,
-          action: 'PROCESS',
-          stepName: 'CLEANUP_ORPHAN_ID',
-          details: `Brand_Name missing; Cleared Brand_ID_Machine: ${brandId}`
-        });
+      /* --- SCHEDULER CHECK --- */
+      if (shouldExitForTimeout_(t0)) {
+        shouldExit = true;
+        break;
       }
+
+      // Orphan = Brand_ID exists but Brand_Name missing → clear ID
+      output[i][IDX.brandIdM] = '';
+      clearedCount++;
+
+      // Log mutation
+      ETI_log_({
+        scriptName: SCRIPT_NAME,
+        functionName: FUNCTION_NAME,
+        sheetName: SHEET_NAME,
+        level: 'WARN',
+        rowNumber: rowNum,
+        action: 'PROCESS',
+        stepName: 'CLEANUP_ORPHAN_ID',
+        details: `Brand_Name missing; Cleared Brand_ID_Machine: ${brandId}`
+      });
     }
 
-    /* =========================
-       NOTICE — NO CLEANUP
-    ========================= */
 
+    /* --- NOTICE: NO CLEANUP --- */
     if (clearedCount === 0) {
       ETI_logNotice_(
         SCRIPT_NAME,
@@ -1417,14 +1415,17 @@ function cleanupOrphan_BrandIDs_Machine_LookupBrands() {
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME, 'CLEANUP_ORPHAN_ID');
 
-    /* =========================
-       WRITE BACK
-    ========================= */
+
+    /* --- STEP: WRITE_BACK --- */
+    ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME, 'WRITE_BACK');
+
+    // Write full dataset back (single batch write)
     range.setValues(output);
 
-    /* =========================
-       SUMMARY
-    ========================= */
+    ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME, 'WRITE_BACK');
+
+
+    /* --- SUMMARY --- */
     ETI_logSummary_(
       SCRIPT_NAME,
       FUNCTION_NAME,
@@ -1432,12 +1433,29 @@ function cleanupOrphan_BrandIDs_Machine_LookupBrands() {
       `Cleared=${clearedCount}`
     );
 
-    /* =========================
-       END
-    ========================= */
+
+    /* --- SCHEDULER EXIT --- */
+    if (shouldExit) {
+      return exitAndScheduleContinuation_(
+        SCRIPT_NAME,
+        FUNCTION_NAME,
+        {
+          pipelineName: getExecutionContext_()?.pipeline_name
+        }
+      );
+    }
+
     ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME);
 
-  } catch (err) {
+  }
+
+
+  /*
+  ============================================
+  ERROR BLOCK
+  ============================================
+  */
+  catch (err) {
 
     ETI_logError_(
       SCRIPT_NAME,
@@ -1448,10 +1466,16 @@ function cleanupOrphan_BrandIDs_Machine_LookupBrands() {
     );
 
     throw err;
+  }
 
-  } finally {
+
+  /*
+  ============================================
+  FINALIZATION BLOCK
+  ============================================
+  */
+  finally {
 
     flushLogs_();
-
   }
 }

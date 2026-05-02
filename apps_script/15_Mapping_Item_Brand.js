@@ -1,105 +1,60 @@
-// MAPPING ITEM-BRAND: POPULATE
+/* 
+=========================================================
+FUNCTION: ITEM-BRAND MAPPING DISCOVERY
+=========================================================*/
 /**
  * Script Name: populateMapping_Item_Brand_FromTransactionResolution
  * Script Language: Google Apps Script (JavaScript)
- * Version Introduced: v1.3
- * Current Status: ACTIVE
+ * App Version: v1.3
  *
- * Purpose:
- * - Discover Item ↔ Brand relationships observed in Transaction_Resolution
- * - Insert mapping rows into Mapping_Item_Brand
- * - Preserve first-seen transaction evidence
- * - Capture canonical snapshots for audit visibility
+ * PURPOSE:
+ * - Discover Item ↔ Brand relationships from transaction data
+ * - Create mapping rows for new relationships only
+ * - Maintain first-seen transaction traceability
  *
- * Mapping Identity:
- * (Item_ID_Machine, Brand_ID_Machine)
+ * PRECONDITIONS:
+ * - Sheets exist:
+ *   - Transaction_Resolution
+ *   - Mapping_Item_Brand
+ * - Required columns exist in both sheets
  *
- * Preconditions:
- * - Sheet must exist: Transaction_Resolution
- * - Sheet must exist: Mapping_Item_Brand
- * - Header row must exist in row 1
+ * =========================================================
+ * EXECUTION FLOW
+ * =========================================================
+ * 1. Load existing mapping data and build identity set
+ * 2. Load transaction data
+ * 3. Iterate transaction rows:
+ *    - Validate required identifiers
+ *    - Skip duplicates
+ *    - Construct mapping row
+ * 4. Batch append new mappings
+ * 5. Emit execution summary
  *
- * Required columns in Transaction_Resolution:
- * - Txn_ID_Machine
- * - Created_At
- * - Item_ID_Machine
- * - Brand_ID_Machine
- * - Item_Name_Canonical
- * - Brand_Name_Canonical
+ * =========================================================
+ * ALGORITHM (IMPLEMENTATION LOGIC)
+ * =========================================================
+ * - Process rows where:
+ *     - Txn_ID_Machine exists
+ *     - Item_ID_Machine exists
+ *     - Brand_ID_Machine exists
+ * - Deduplicate using (Item_ID + Brand_ID)
+ * - Assign:
+ *     - First_Seen_Txn_Date (priority: entered → created → now)
+ *     - First_Seen_Txn_ID
+ * - Default mapping state:
+ *     - Active = TRUE
+ *     - Analytics = TRUE
+ *     - Archived = FALSE
  *
- * Required columns in Mapping_Item_Brand:
- * - Item_Name_Canonical
- * - Brand_Name_Canonical
- * - Item_Status_Snapshot
- * - Brand_Status_Snapshot
- * - Is_Mapping_Active
- * - Is_Analytics_Enabled
- * - Is_Archived
- * - Created_At
- * - Notes
- * - First_Seen_Txn_Date
- * - First_Seen_Txn_ID
- * - Item_ID_Machine
- * - Brand_ID_Machine
- *
- * Algorithm (Step-by-Step):
- *
- * 1. Load Mapping_Item_Brand and resolve column indexes.
- * 2. Build in-memory Set of existing mapping identities:
- *      Item_ID_Machine + Brand_ID_Machine
- *
- * 3. Load Transaction_Resolution rows.
- *
- * 4. Iterate each transaction:
- *
- *    Skip if:
- *      - Txn_ID_Machine missing
- *      - Item_ID_Machine missing
- *      - Brand_ID_Machine missing
- *
- * 5. Construct mapping identity key.
- *
- *    If identity already exists:
- *       → skip row
- *
- * 6. Create new mapping row:
- *
- *      Item_Name_Canonical
- *      Brand_Name_Canonical
- *
- *      Item_Status_Snapshot  = ""
- *      Brand_Status_Snapshot = ""
- *
- *      Is_Mapping_Active     = TRUE
- *      Is_Analytics_Enabled  = TRUE
- *      Is_Archived           = FALSE
- *
- *      Created_At = NOW()
- *      Notes      = "Discovered from Transaction_Resolution"
- *
- *      First_Seen_Txn_Date
- *      First_Seen_Txn_ID
- *
- *      Item_ID_Machine
- *      Brand_ID_Machine
- *
- * 7. Append rows in batch.
- *
- * 8. Emit execution summary and completion logs.
- *
- * Failure Modes:
+ * FAILURE MODES:
  * - Required sheet missing
  * - Required column missing
- *
- * Reason for Deprecation:
- * - N/A
  */
+
 
 function populateMapping_Item_Brand_FromTransactionResolution() {
 
-  /* =========================
-     CONFIG / CONSTANTS
-  ========================= */
+  /* --- FUNCTION-LEVEL CONSTANTS --- */
   const SCRIPT_NAME  = 'Mapping_Item_Brand';
   const FUNCTION_NAME = 'populateMapping_Item_Brand_FromTransactionResolution';
   const TGT_SHEET   = 'Mapping_Item_Brand';
@@ -111,51 +66,35 @@ function populateMapping_Item_Brand_FromTransactionResolution() {
 
   try {
 
-    /* =========================
-       START
-    ========================= */
+    /* --- INITIALIZATION --- */
     ETI_logStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const txSh = ss.getSheetByName(TXN_SHEET);
     const mpSh = ss.getSheetByName(MAP_SHEET);
 
-    if (!txSh || !mpSh) {
-      throw new Error('Required sheet not found');
-    }
+    if (!txSh || !mpSh) throw new Error('Required sheet not found');
 
-    /* =========================
-       STEP — LOAD_MAPPING
-    ========================= */
 
+    /* --- STEP: LOAD_MAPPING --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_MAPPING');
-
-    /* =========================
-       READ MAPPING TABLE
-    ========================= */
 
     const mpData = mpSh.getDataRange().getValues();
     const mpHdr  = mpData[0];
     const mpCol  = n => mpHdr.indexOf(n);
 
     const IDX_MAP = {
-
       itemCanon: mpCol('Item_Name_Canonical'),
       brandCanon: mpCol('Brand_Name_Canonical'),
-
       itemStatus: mpCol('Item_Status_Snapshot'),
       brandStatus: mpCol('Brand_Status_Snapshot'),
-
       mapActive: mpCol('Is_Mapping_Active'),
       analytics: mpCol('Is_Analytics_Enabled'),
       archived: mpCol('Is_Archived'),
-
       createdAt: mpCol('Created_At'),
       notes: mpCol('Notes'),
-
       firstSeenDate: mpCol('First_Seen_Txn_Date'),
       firstSeenTxn: mpCol('First_Seen_Txn_ID'),
-
       itemId: mpCol('Item_ID_Machine'),
       brandId: mpCol('Brand_ID_Machine')
     };
@@ -164,10 +103,7 @@ function populateMapping_Item_Brand_FromTransactionResolution() {
       if (v === -1) throw new Error(`Mapping_Item_Brand missing column: ${k}`);
     }
 
-    /* =========================
-       BUILD EXISTING IDENTITY SET
-    ========================= */
-
+    // Build existing mapping identity set (Item_ID + Brand_ID)
     const existingSet = new Set();
 
     for (let i = 1; i < mpData.length; i++) {
@@ -177,70 +113,52 @@ function populateMapping_Item_Brand_FromTransactionResolution() {
 
       if (!itemId || !brandId) continue;
 
-      const key = `${itemId}||${brandId}`;
-
-      existingSet.add(key);
+      existingSet.add(`${itemId}||${brandId}`);
     }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_MAPPING');
 
-    /* =========================
-       STEP — LOAD_TXN
-    ========================= */
 
+    /* --- STEP: LOAD_TXN --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_TXN');
-
-    /* =========================
-       READ TRANSACTION RESOLUTION
-    ========================= */
 
     const txData = txSh.getDataRange().getValues();
     const txHdr  = txData[0];
     const txCol  = n => txHdr.indexOf(n);
 
     const IDX_TX = {
-
       txnId: txCol('Txn_ID_Machine'),
-
       txnDateEntered: txCol('Txn_Date_Entered'),
       createdAt: txCol('Created_At'),
-
       itemId: txCol('Item_ID_Machine'),
       brandId: txCol('Brand_ID_Machine'),
-
       itemCanon: txCol('Item_Name_Canonical'),
       brandCanon: txCol('Brand_Name_Canonical')
     };
 
     for (const [k,v] of Object.entries(IDX_TX)) {
-      if (v === -1) {
-        throw new Error(`Transaction_Resolution missing column: ${k}`);
-      }
+      if (v === -1) throw new Error(`Transaction_Resolution missing column: ${k}`);
     }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_TXN');
 
-    /* =========================
-       SKIP — NO DATA
-    ========================= */
 
+    /* --- VALIDATION: SOURCE DATA --- */
     if (txData.length <= 1) {
-
-      ETI_logSkip_(
-        SCRIPT_NAME,
-        FUNCTION_NAME,
-        TGT_SHEET,
-        'SRC_Table contains no data rows'
-      );
-
+      ETI_logSkip_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'SRC_Table contains no data rows');
       ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
       return;
     }
 
-    /* =========================
-       COUNTERS
-    ========================= */
 
+    /*
+    ---------------------------------------------------------
+    PROCESS LOOP
+    ---------------------------------------------------------
+    // Scan transactions → discover Item ↔ Brand relationships
+    // Deduplicate using mapping identity
+    // Construct mapping rows
+    */
     let scanned = 0;
     let skipNoTxn = 0;
     let skipNoItem = 0;
@@ -248,10 +166,6 @@ function populateMapping_Item_Brand_FromTransactionResolution() {
     let skipDuplicate = 0;
 
     const rowsToAppend = [];
-
-    /* =========================
-       DISCOVERY LOOP
-    ========================= */
 
     for (let i = 1; i < txData.length; i++) {
 
@@ -263,27 +177,19 @@ function populateMapping_Item_Brand_FromTransactionResolution() {
       const itemId = r[IDX_TX.itemId];
       const brandId = r[IDX_TX.brandId];
 
-      if (!txnId) {
-        skipNoTxn++;
-        continue;
-      }
+      // Skip rows without transaction identity
+      if (!txnId) { skipNoTxn++; continue; }
 
-      if (!itemId) {
-        skipNoItem++;
-        continue;
-      }
+      // Skip rows without item
+      if (!itemId) { skipNoItem++; continue; }
 
-      if (!brandId) {
-        skipNoBrand++;
-        continue;
-      }
+      // Skip rows without brand
+      if (!brandId) { skipNoBrand++; continue; }
 
       const key = `${itemId}||${brandId}`;
 
-      if (existingSet.has(key)) {
-        skipDuplicate++;
-        continue;
-      }
+      // Skip duplicate mapping
+      if (existingSet.has(key)) { skipDuplicate++; continue; }
 
       const row = new Array(mpHdr.length).fill('');
 
@@ -300,15 +206,8 @@ function populateMapping_Item_Brand_FromTransactionResolution() {
       row[IDX_MAP.createdAt] = new Date();
       row[IDX_MAP.notes] = 'Discovered from Transaction_Resolution';
 
-      let firstSeenDate = r[IDX_TX.txnDateEntered];
-
-      if (!firstSeenDate) {
-        firstSeenDate = r[IDX_TX.createdAt];
-      }
-
-      if (!firstSeenDate) {
-        firstSeenDate = new Date();
-      }
+      // Resolve first seen date (priority: entered → created → now)
+      let firstSeenDate = r[IDX_TX.txnDateEntered] || r[IDX_TX.createdAt] || new Date();
 
       row[IDX_MAP.firstSeenDate] = firstSeenDate;
       row[IDX_MAP.firstSeenTxn] = txnId;
@@ -317,30 +216,25 @@ function populateMapping_Item_Brand_FromTransactionResolution() {
       row[IDX_MAP.brandId] = brandId;
 
       rowsToAppend.push(row);
-
       existingSet.add(key);
+
+      // Log mapping creation
+      ETI_log_({
+        scriptName: SCRIPT_NAME,
+        functionName: FUNCTION_NAME,
+        sheetName: TGT_SHEET,
+        level: 'INFO',
+        action: 'PROCESS',
+        stepName: 'WRITE_OUTPUT',
+        details: `Item_ID=${itemId}, Brand_ID=${brandId}`
+      });
     }
 
-    /* =========================
-       STEP — WRITE_OUTPUT
-    ========================= */
 
+    /* --- STEP: WRITE_OUTPUT --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_OUTPUT');
 
     if (rowsToAppend.length > 0) {
-
-      for (let i = 0; i < rowsToAppend.length; i++) {
-
-        ETI_log_({
-          scriptName: SCRIPT_NAME,
-          functionName: FUNCTION_NAME,
-          sheetName: TGT_SHEET,
-          level: 'INFO',
-          action: 'PROCESS',
-          stepName: 'WRITE_OUTPUT',
-          details: 'Mapping row appended'
-        });
-      }
 
       mpSh.getRange(
         mpSh.getLastRow() + 1,
@@ -351,10 +245,7 @@ function populateMapping_Item_Brand_FromTransactionResolution() {
 
     } else {
 
-      /* =========================
-         STEP: NOTICE — NO INSERT
-      ========================= */
-
+      /* --- NOTICE — NO INSERT --- */
       ETI_logNotice_(
         SCRIPT_NAME,
         FUNCTION_NAME,
@@ -366,10 +257,8 @@ function populateMapping_Item_Brand_FromTransactionResolution() {
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_OUTPUT');
 
-    /* =========================
-       SUMMARY
-    ========================= */
 
+    /* --- SUMMARY --- */
     const durationMs = new Date().getTime() - t0.getTime();
 
     ETI_logSummary_(
@@ -381,60 +270,74 @@ function populateMapping_Item_Brand_FromTransactionResolution() {
       `DurationMs=${durationMs}`
     );
 
-    /* =========================
-       END
-    ========================= */
-
     ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
 
   } catch (err) {
 
-    ETI_logError_(
-      SCRIPT_NAME,
-      FUNCTION_NAME,
-      TGT_SHEET,
-      err,
-      'MAIN'
-    );
-
+    ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, err, 'MAIN');
     throw err;
 
   } finally {
 
     flushLogs_();
-
   }
 }
 
 
 
-
-
-// MAPPING ITEM-BRAND: PROCESS
+/* 
+=========================================================
+FUNCTION: ITEM-BRAND MAPPING STATE RECONCILIATION
+=========================================================*/
 /**
  * Script Name: processMapping_Item_Brand_StateMachine
  * Script Language: Google Apps Script (JavaScript)
- * Version Introduced: v1.3
- * Current Status: ACTIVE
+ * App Version: v1.3
  *
- * Purpose:
- * - Reconcile mapping rows against current entity governance state
- * - Update status snapshots
- * - Derive mapping flags deterministically
- * - Repair drift caused by entity lifecycle changes
+ * PURPOSE:
+ * - Reconcile mapping rows with current Item and Brand states
+ * - Derive status snapshots for both entities
+ * - Maintain mapping activation consistency
  *
- * Preconditions:
- * - Sheet exists: Mapping_Item_Brand
- * - Sheet exists: Lookup_Items
- * - Sheet exists: Lookup_Brands
- * - Sheet exists: Automation_Control
+ * PRECONDITIONS:
+ * - Sheets exist:
+ *   - Mapping_Item_Brand
+ *   - Lookup_Items
+ *   - Lookup_Brands
+ * - Required columns exist
+ *
+ * =========================================================
+ * EXECUTION FLOW
+ * =========================================================
+ * 1. Load mapping, item, and brand data
+ * 2. Build Item and Brand state maps
+ * 3. Iterate mapping rows:
+ *    - Resolve entity states
+ *    - Derive snapshot statuses
+ *    - Update mapping activation
+ *    - Detect and log drift
+ * 4. Write updated rows back
+ * 5. Emit summary
+ *
+ * =========================================================
+ * ALGORITHM (IMPLEMENTATION LOGIC)
+ * =========================================================
+ * - Derive Item / Brand status from:
+ *     - Is_Approved, Is_Active, Is_Archived
+ * - Mapping active if:
+ *     - Neither Item nor Brand is Archived
+ * - Always enforce:
+ *     - Is_Analytics_Enabled = TRUE
+ * - Detect drift when:
+ *     - Previous activation ≠ derived activation
+ *
+ * FAILURE MODES:
+ * - Required sheet missing
+ * - Required column missing
  */
-
 function processMapping_Item_Brand_StateMachine() {
 
-  /* =========================
-     CONFIG / CONSTANTS
-  ========================= */
+  /* --- FUNCTION-LEVEL CONSTANTS --- */
   const SCRIPT_NAME = 'Mapping_Item_Brand';
   const FUNCTION_NAME = 'processMapping_Item_Brand_StateMachine';
   const TGT_SHEET = 'Mapping_Item_Brand';
@@ -442,23 +345,19 @@ function processMapping_Item_Brand_StateMachine() {
   const MAP_SHEET = 'Mapping_Item_Brand';
   const ITEM_SHEET = 'Lookup_Items';
   const BRAND_SHEET = 'Lookup_Brands';
-  const CTRL_SHEET = 'Automation_Control';
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const t0 = new Date();
 
   try {
 
-    /* =========================
-       START
-    ========================= */
+    /* --- INITIALIZATION --- */
     ETI_logStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
 
-    /* 
-    ======================================
-       LOAD SHEETS
-    ====================================== 
-    */
+
+    /* --- STEP: LOAD_DATA --- */
+    ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_DATA');
+
     const mapSh = ss.getSheetByName(MAP_SHEET);
     const itemSh = ss.getSheetByName(ITEM_SHEET);
     const brandSh = ss.getSheetByName(BRAND_SHEET);
@@ -467,31 +366,20 @@ function processMapping_Item_Brand_StateMachine() {
       throw new Error('Required sheet missing');
     }
 
-    /* =========================
-       STEP — LOAD_DATA
-    ========================= */
-
-    ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_DATA');
-
     const mapData = mapSh.getDataRange().getValues();
     const mapHdr = mapData[0];
 
     const col = n => mapHdr.indexOf(n);
 
     const IDX = {
-
       itemCanon: col('Item_Name_Canonical'),
       brandCanon: col('Brand_Name_Canonical'),
-
       itemStatus: col('Item_Status_Snapshot'),
       brandStatus: col('Brand_Status_Snapshot'),
-
       mapActive: col('Is_Mapping_Active'),
       analytics: col('Is_Analytics_Enabled'),
       archived: col('Is_Archived'),
-
       notes: col('Notes'),
-
       itemId: col('Item_ID_Machine'),
       brandId: col('Brand_ID_Machine')
     };
@@ -500,10 +388,8 @@ function processMapping_Item_Brand_StateMachine() {
       if (v === -1) throw new Error(`Missing column: ${k}`);
     }
 
-    /* =========================
-       BUILD ITEM STATE MAP
-    ========================= */
 
+    /* --- BUILD ITEM STATE MAP --- */
     const itemData = itemSh.getDataRange().getValues();
     const itemHdr = itemData[0];
 
@@ -521,23 +407,21 @@ function processMapping_Item_Brand_StateMachine() {
     for (let i = 1; i < itemData.length; i++) {
 
       const r = itemData[i];
-
       const id = r[IDX_ITEM.id];
 
+      // Skip rows without Item_ID
       if (!id) continue;
 
+      // Store current governance state snapshot
       itemState[id] = {
-
         approved: r[IDX_ITEM.approved],
         active: r[IDX_ITEM.active],
         archived: r[IDX_ITEM.archived]
       };
     }
 
-    /* =========================
-       BUILD BRAND STATE MAP
-    ========================= */
 
+    /* --- BUILD BRAND STATE MAP --- */
     const brandData = brandSh.getDataRange().getValues();
     const brandHdr = brandData[0];
 
@@ -555,13 +439,13 @@ function processMapping_Item_Brand_StateMachine() {
     for (let i = 1; i < brandData.length; i++) {
 
       const r = brandData[i];
-
       const id = r[IDX_BRAND.id];
 
+      // Skip rows without Brand_ID
       if (!id) continue;
 
+      // Store current governance state snapshot
       brandState[id] = {
-
         approved: r[IDX_BRAND.approved],
         active: r[IDX_BRAND.active],
         archived: r[IDX_BRAND.archived]
@@ -570,19 +454,22 @@ function processMapping_Item_Brand_StateMachine() {
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_DATA');
 
-    /* =========================
-       STEP — DRIFT_REPAIR
-    ========================= */
 
+    /* --- STEP: STATE_MACHINE --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'DRIFT_REPAIR');
-
-    /* =========================
-       PROCESS MAPPINGS
-    ========================= */
 
     let repaired = 0;
     let valid = 0;
 
+
+    /*
+    ---------------------------------------------------------
+    PROCESS LOOP
+    ---------------------------------------------------------
+    // Reconcile mapping rows with current Item + Brand state
+    // Derive status snapshots
+    // Update mapping activation flag
+    */
     for (let i = 1; i < mapData.length; i++) {
 
       const row = mapData[i];
@@ -596,32 +483,38 @@ function processMapping_Item_Brand_StateMachine() {
       let itemStatus = 'Unknown';
       let brandStatus = 'Unknown';
 
-      if (item) {
 
+      // Derive Item status from governance flags
+      if (item) {
         if (item.archived) itemStatus = 'Archived';
         else if (item.active) itemStatus = 'Active';
         else if (item.approved) itemStatus = 'Approved (Hidden Dropdown)';
       }
 
+      // Derive Brand status from governance flags
       if (brand) {
-
         if (brand.archived) brandStatus = 'Archived';
         else if (brand.active) brandStatus = 'Active';
         else if (brand.approved) brandStatus = 'Approved (Hidden Dropdown)';
       }
 
+
       const prevActive = row[IDX.mapActive];
 
+      // Mapping active only if BOTH entities are not archived
       const newActive =
         !(itemStatus === 'Archived' || brandStatus === 'Archived');
 
+
+      // Update snapshot columns
       row[IDX.itemStatus] = itemStatus;
       row[IDX.brandStatus] = brandStatus;
 
       row[IDX.mapActive] = newActive;
+      row[IDX.analytics] = true; // Always enabled
 
-      row[IDX.analytics] = true;
 
+      // Detect drift (activation state change)
       if (prevActive !== newActive) {
 
         repaired++;
@@ -629,9 +522,7 @@ function processMapping_Item_Brand_StateMachine() {
         row[IDX.notes] =
           `Mapping state updated due to entity status change`;
 
-        /* =========================
-           LOG PER ROW
-        ========================= */
+        // Log drift repair
         ETI_log_({
           scriptName: SCRIPT_NAME,
           functionName: FUNCTION_NAME,
@@ -649,10 +540,8 @@ function processMapping_Item_Brand_StateMachine() {
       }
     }
 
-    /* =========================
-       NOTICE — NO DRIFT
-    ========================= */
 
+    /* --- NOTICE: NO DRIFT --- */
     if (repaired === 0) {
       ETI_logNotice_(
         SCRIPT_NAME,
@@ -665,22 +554,18 @@ function processMapping_Item_Brand_StateMachine() {
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'DRIFT_REPAIR');
 
-    /* =========================
-       STEP — WRITE_BACK
-    ========================= */
 
+    /* --- STEP: WRITE_BACK --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_BACK');
 
     mapSh
-      .getRange(2,1,mapData.length-1,mapHdr.length)
+      .getRange(2, 1, mapData.length - 1, mapHdr.length)
       .setValues(mapData.slice(1));
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_BACK');
 
-    /* =========================
-       SUMMARY
-    ========================= */
 
+    /* --- SUMMARY --- */
     const durationMs = new Date().getTime() - t0.getTime();
 
     ETI_logSummary_(
@@ -690,246 +575,194 @@ function processMapping_Item_Brand_StateMachine() {
       `Valid=${valid}, Repaired=${repaired}, DurationMs=${durationMs}`
     );
 
-    /* =========================
-       END
-    ========================= */
-
     ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
 
   } catch (err) {
 
-    ETI_logError_(
-      SCRIPT_NAME,
-      FUNCTION_NAME,
-      TGT_SHEET,
-      err,
-      'MAIN'
-    );
-
+    ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, err, 'MAIN');
     throw err;
 
   } finally {
 
     flushLogs_();
-
   }
 }
 
 
 
-
-
-// MAPPING ITEM-BRAND: CLEANUP
+/* 
+=========================================================
+FUNCTION: ITEM-BRAND MAPPING CLEANUP
+=========================================================*/
 /**
  * Script Name: cleanupMapping_Item_Brand_InvalidRows
  * Script Language: Google Apps Script (JavaScript)
- * Version Introduced: v1.3
- * Current Status: ACTIVE
+ * App Version: v1.3
  *
- * Purpose:
- * - Permanently DELETE invalid rows from Mapping_Item_Brand
- * - A row is invalid if:
- *   - Item_ID_Machine is missing OR
- *   - Brand_ID_Machine is missing
- * - Maintain a clean, authoritative mapping table
+ * PURPOSE:
+ * - Remove invalid mapping rows
+ * - Ensure mapping table integrity
  *
- * Preconditions:
- * - Sheet must exist: Mapping_Item_Brand
- * - Header row present in row 1
- * - Required columns (header-based):
- *   - Item_ID_Machine
- *   - Brand_ID_Machine
+ * PRECONDITIONS:
+ * - Sheet exists: Mapping_Item_Brand
+ * - Required columns exist
  *
- * Algorithm (Step-by-Step):
+ * =========================================================
+ * EXECUTION FLOW
+ * =========================================================
+ * 1. Load mapping data
+ * 2. Iterate rows:
+ *    - Identify invalid rows
+ *    - Collect row indices
+ * 3. Delete rows in reverse order
+ * 4. Emit summary
  *
- * 1. Generate Execution_ID for traceability.
- * 2. Load Mapping_Item_Brand sheet.
- * 3. Resolve column indexes using header names.
- * 4. Scan all rows and identify invalid records:
- *      Item_ID_Machine missing
- *      OR
- *      Brand_ID_Machine missing
- * 5. Collect row numbers to delete.
- * 6. Delete rows in reverse order (bottom-up).
- * 7. Emit execution summary and completion logs.
+ * =========================================================
+ * ALGORITHM (IMPLEMENTATION LOGIC)
+ * =========================================================
+ * - Row is invalid if:
+ *     - Item_ID_Machine missing OR
+ *     - Brand_ID_Machine missing OR
+ *     - Item_Name_Canonical missing OR
+ *     - Brand_Name_Canonical missing
+ * - Perform deletion after scan (reverse order)
  *
- * Failure Modes:
- * - Mapping_Item_Brand sheet not found
- * - Required column missing
- *
- * Reason for Deprecation:
- * - N/A
+ * FAILURE MODES:
+ * - Sheet missing
+ * - Column missing
  */
-
 function cleanupMapping_Item_Brand_InvalidRows() {
 
-  /* =========================
-     CONFIG / CONSTANTS
-  ========================= */
-  const SCRIPT_NAME  = 'Mapping_Item_Brand';
+  /* --- FUNCTION-LEVEL CONSTANTS --- */
+  const SCRIPT_NAME = 'Mapping_Item_Brand';
   const FUNCTION_NAME = 'cleanupMapping_Item_Brand_InvalidRows';
-  const TGT_SHEET    = 'Mapping_Item_Brand';
+  const TGT_SHEET = 'Mapping_Item_Brand';
 
-  const MAP_SHEET    = 'Mapping_Item_Brand';
+  const SHEET_NAME = 'Mapping_Item_Brand';
 
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
   const t0 = new Date();
 
   try {
 
-    /* =========================
-       START
-    ========================= */
+    /* --- INITIALIZATION --- */
     ETI_logStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
 
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const mapSh = ss.getSheetByName(MAP_SHEET);
 
-    if (!mapSh) {
-      throw new Error(`Sheet not found: ${MAP_SHEET}`);
-    }
+    /* --- STEP: LOAD_DATA --- */
+    ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_DATA');
 
-    const data = mapSh.getDataRange().getValues();
+    const sh = ss.getSheetByName(SHEET_NAME);
+    if (!sh) throw new Error('Mapping_Item_Brand sheet not found');
 
-    /* =========================
-       SKIP: NO DATA
-    ========================= */
-    if (data.length < 2) {
-
-      ETI_logSkip_(
-        SCRIPT_NAME,
-        FUNCTION_NAME,
-        TGT_SHEET,
-        'No data rows found'
-      );
-
-      ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
-      return;
-    }
-
-    /* =========================
-       HEADER MAPPING
-    ========================= */
-    const header = data[0];
-    const col = n => header.indexOf(n);
+    const data = sh.getDataRange().getValues();
+    const hdr = data[0];
+    const col = n => hdr.indexOf(n);
 
     const IDX = {
       itemId: col('Item_ID_Machine'),
-      brandId: col('Brand_ID_Machine')
+      brandId: col('Brand_ID_Machine'),
+      itemCanon: col('Item_Name_Canonical'),
+      brandCanon: col('Brand_Name_Canonical')
     };
 
-    for (const [key, idx] of Object.entries(IDX)) {
-
-      if (idx === -1) {
-        throw new Error(
-          `Missing required column: ${
-            key === 'itemId'
-              ? 'Item_ID_Machine'
-              : 'Brand_ID_Machine'
-          }`
-        );
-      }
+    for (const [k,v] of Object.entries(IDX)) {
+      if (v === -1) throw new Error(`Missing column: ${k}`);
     }
 
-    /* =========================
-       STEP — CLEANUP_INVALID_ROWS
-    ========================= */
+    ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_DATA');
 
-    ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'CLEANUP_INVALID_ROWS');
 
-    /* =========================
-       IDENTIFY INVALID ROWS
-    ========================= */
+    /*
+    ---------------------------------------------------------
+    PROCESS LOOP
+    ---------------------------------------------------------
+    // Identify invalid mapping rows
+    // Condition: missing Item_ID OR missing Brand_ID
+    // OR missing canonical values
+    */
+    ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'CLEANUP');
+
+    let scanned = 0;
+    let removed = 0;
 
     const rowsToDelete = [];
 
     for (let i = 1; i < data.length; i++) {
 
+      scanned++;
+
+      const r = data[i];
       const rowNum = i + 1;
 
-      const itemId  = data[i][IDX.itemId];
-      const brandId = data[i][IDX.brandId];
+      const itemId = r[IDX.itemId];
+      const brandId = r[IDX.brandId];
+      const itemCanon = r[IDX.itemCanon];
+      const brandCanon = r[IDX.brandCanon];
 
-      if (!itemId || !brandId) {
-        rowsToDelete.push(rowNum);
-      }
-    }
+      // Invalid if critical identifiers are missing
+      const isInvalid =
+        (!itemId || !brandId) ||
+        (!itemCanon || !brandCanon);
 
-    /* =========================
-       DELETE ROWS (BOTTOM-UP)
-    ========================= */
+      if (!isInvalid) continue;
 
-    let deletedCount = 0;
+      rowsToDelete.push(rowNum);
+      removed++;
 
-    for (let i = rowsToDelete.length - 1; i >= 0; i--) {
-
-      mapSh.deleteRow(rowsToDelete[i]);
-      deletedCount++;
-
-      /* =========================
-         LOG PER ROW
-      ========================= */
+      // Log deletion candidate
       ETI_log_({
         scriptName: SCRIPT_NAME,
         functionName: FUNCTION_NAME,
         sheetName: TGT_SHEET,
         level: 'WARN',
-        rowNumber: rowsToDelete[i],
-        action: 'PROCESS',
-        stepName: 'CLEANUP_INVALID_ROWS',
-        details: 'Missing Item_ID_Machine or Brand_ID_Machine'
+        rowNumber: rowNum,
+        action: 'DELETE',
+        stepName: 'CLEANUP',
+        details: `Invalid mapping row detected`
       });
     }
 
-    /* =========================
-       NOTICE — NO CLEANUP
-    ========================= */
 
-    if (deletedCount === 0) {
+    // No-op notice (no invalid rows)
+    if (removed === 0) {
       ETI_logNotice_(
         SCRIPT_NAME,
         FUNCTION_NAME,
         TGT_SHEET,
-        'CLEANUP_INVALID_ROWS',
-        'No invalid rows found'
+        'CLEANUP',
+        'No invalid mapping rows found'
       );
     }
 
-    ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'CLEANUP_INVALID_ROWS');
 
-    /* =========================
-       SUMMARY
-    ========================= */
+    // Delete rows (reverse order to avoid index shift)
+    for (let i = rowsToDelete.length - 1; i >= 0; i--) {
+      sh.deleteRow(rowsToDelete[i]);
+    }
 
+    ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'CLEANUP');
+
+
+    /* --- SUMMARY --- */
     const durationMs = new Date().getTime() - t0.getTime();
 
     ETI_logSummary_(
       SCRIPT_NAME,
       FUNCTION_NAME,
       TGT_SHEET,
-      `Deleted=${deletedCount}, DurationMs=${durationMs}`
+      `Scanned=${scanned}, Removed=${removed}, DurationMs=${durationMs}`
     );
-
-    /* =========================
-       END
-    ========================= */
 
     ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
 
   } catch (err) {
 
-    ETI_logError_(
-      SCRIPT_NAME,
-      FUNCTION_NAME,
-      TGT_SHEET,
-      err,
-      'MAIN'
-    );
-
+    ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, err, 'MAIN');
     throw err;
 
   } finally {
 
     flushLogs_();
-
   }
 }
