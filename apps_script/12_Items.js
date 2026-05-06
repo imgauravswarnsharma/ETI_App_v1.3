@@ -6,7 +6,6 @@
  * Script Name: populateStagingLookupItems_FromTransactionResolution
  * Script Language: Google Apps Script (JavaScript)
  * Version Introduced: v1.3
- * Current Status: ACTIVE
  *
  * ---------------------------------------------------------
  * PURPOSE
@@ -176,6 +175,7 @@ function populateStagingLookupItems_FromTransactionResolution() {
     let skipHasItem = 0;
     let skipNoCanon = 0;
     let skipDuplicateCanon = 0;
+    let insertedCount = 0;
 
     const rowsToAppend = [];
 
@@ -186,10 +186,16 @@ function populateStagingLookupItems_FromTransactionResolution() {
       const r = tsData[i];
 
       // Skip: missing txn
-      if (!r[IDX.txnId]) { skipNoTxn++; continue; }
+      if (!r[IDX.txnId]) { 
+        skipNoTxn++; 
+        continue; 
+      }
 
       // Skip: already resolved
-      if (r[IDX.itemId]) { skipHasItem++; continue; }
+      if (r[IDX.itemId]) { 
+        skipHasItem++; 
+        continue; 
+      }
 
       const canon = r[IDX.itemCanon];
 
@@ -217,7 +223,6 @@ function populateStagingLookupItems_FromTransactionResolution() {
 
           flushLogs_();
         }
-
         shouldExit = true;
         break;
       }
@@ -229,17 +234,17 @@ function populateStagingLookupItems_FromTransactionResolution() {
       row[IDX_STG.stagingId] = Utilities.getUuid();
       row[IDX_STG.entered] = r[IDX.itemEntered];
       row[IDX_STG.canon] = canon;
-
       row[IDX_STG.adminAction] = 'Review';
       row[IDX_STG.isApproved] = false;
       row[IDX_STG.isActive] = false;
       row[IDX_STG.isArchived] = false;
       row[IDX_STG.isPromoted] = false;
-
       row[IDX_STG.populatedAt] = new Date();
       row[IDX_STG.notes] = 'Staged from Transaction_Resolution';
 
       rowsToAppend.push(row);
+      insertedCount++;
+      stagingCanonSet.add(canon);
 
       // Log mutation
       ETI_log_({
@@ -250,13 +255,12 @@ function populateStagingLookupItems_FromTransactionResolution() {
         rowNumber: i + 1,
         action: 'PROCESS',
         stepName: 'WRITE_OUTPUT',
-        details: `Txn_ID=${r[IDX.txnId]}, Canonical=${canon}`
+        details: `Txn_ID=${r[IDX.txnId]}, Item_Canonical=${canon}`
       });
 
-      stagingCanonSet.add(canon);
 
       /* --- PERIODIC FLUSH --- */
-      if (i % 200 === 0 && rowsToAppend.length > 0) {
+      if (i % 240 === 0 && rowsToAppend.length > 0) {
 
         stgSh.getRange(
           stgSh.getLastRow() + 1,
@@ -266,11 +270,10 @@ function populateStagingLookupItems_FromTransactionResolution() {
         ).setValues(rowsToAppend);
 
         rowsToAppend.length = 0;
-
         flushLogs_();
       }
     }
-
+    
 
     /* --- STEP: WRITE_OUTPUT --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_OUTPUT');
@@ -284,6 +287,15 @@ function populateStagingLookupItems_FromTransactionResolution() {
       ).setValues(rowsToAppend);
 
       flushLogs_();
+    } 
+    else {
+      ETI_logNotice_(
+        SCRIPT_NAME,
+        FUNCTION_NAME,
+        TGT_SHEET,
+        'WRITE_OUTPUT',
+        'No new items to stage'
+      );
     }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_OUTPUT');
@@ -291,12 +303,15 @@ function populateStagingLookupItems_FromTransactionResolution() {
 
     /* --- SUMMARY --- */
     const durationMs = new Date().getTime() - t0.getTime();
+    const effectiveProcessed = scanned - skipNoTxn - skipHasItem - skipNoCanon - skipDuplicateCanon;
 
     ETI_logSummary_(
       SCRIPT_NAME,
       FUNCTION_NAME,
       TGT_SHEET,
-      `Scanned=${scanned}, Inserted=${rowsToAppend.length}, DurationMs=${durationMs}`
+      `Scanned=${scanned} | Effective=${effectiveProcessed} | Inserted=${insertedCount} | ` +
+      `Skipped: NoTxn=${skipNoTxn}, HasItem=${skipHasItem}, NoCanon=${skipNoCanon}, Duplicate=${skipDuplicateCanon} | ` +
+      `DurationMs=${durationMs}`
     );
 
 
@@ -495,6 +510,7 @@ function processStagingItems_StateMachine() {
     /* --- STEP: DRIFT_REPAIR --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'DRIFT_REPAIR');
 
+    let processed = 0;
     let repaired = 0;
     let valid = 0;
     let invalid = 0;
@@ -502,11 +518,11 @@ function processStagingItems_StateMachine() {
     const timestamp = Utilities.formatDate(
       new Date(),
       Session.getScriptTimeZone(),
-      "EEEE, MMMM d, yyyy 'at' HH:mm:ss"
+      "yyyy-MM-dd HH:mm:ss"
     );
 
 
-    /* 
+    /*
     ---------------------------------------------------------
     PROCESS LOOP [STATE TRANSITION + DRIFT REPAIR]
     --------------------------------------------------------- */
@@ -519,8 +535,11 @@ function processStagingItems_StateMachine() {
       // Skip rows without admin intent
       if (!admin) continue;
 
+      processed++;
+
       /* --- SCHEDULER CHECK --- */
       if (shouldExitForTimeout_(t0)) {
+        flushLogs_();
         shouldExit = true;
         break;
       }
@@ -534,14 +553,17 @@ function processStagingItems_StateMachine() {
         case 'Review': break;
         case 'Activate': expected.active = true; break;
         case 'Approve (UI Hidden)': expected.approved = true; break;
+
         case 'Approve & Activate':
           expected.approved = true;
           expected.active = true;
           break;
+
         case 'Approve but Deprecate':
           expected.approved = true;
           expected.archived = true;
           break;
+
         case 'Reject':
           expected.archived = true;
           break;
@@ -549,6 +571,18 @@ function processStagingItems_StateMachine() {
         default:
           invalid++;
           row[IDX.integrity] = 'INVALID_ADMIN_ACTION';
+
+          ETI_log_({
+            scriptName: SCRIPT_NAME,
+            functionName: FUNCTION_NAME,
+            sheetName: SRC_SHEET,
+            level: 'ERROR',
+            rowNumber: i + 1,
+            action: 'PROCESS',
+            stepName: 'DRIFT_REPAIR',
+            details: `Staging_ID=${stagingId}, Invalid Admin_Action=${admin}`
+          });
+
           continue;
       }
 
@@ -578,22 +612,30 @@ function processStagingItems_StateMachine() {
 
       if (!validState) {
         row[IDX.integrity] = 'INVALID_STATE';
-        invalid++;
+         invalid++;
+
+        ETI_log_({
+          scriptName: SCRIPT_NAME,
+          functionName: FUNCTION_NAME,
+          sheetName: SRC_SHEET,
+          level: 'ERROR',
+          rowNumber: i + 1,
+          action: 'PROCESS',
+          stepName: 'DRIFT_REPAIR',
+          details: `Staging_ID=${stagingId}, Invalid State`
+        });
+
         continue;
       }
 
       /* --- DERIVE GOVERNANCE FIELDS --- */
       // Pipeline readiness
-      row[IDX.pipelineReady] =
-        row[IDX.isApproved] && !promoted && validState;
+      row[IDX.pipelineReady] = row[IDX.isApproved] && !promoted && validState;
 
       // Review status
-      row[IDX.actionStatus] =
-        promoted ? 'Promoted' :
-        row[IDX.isApproved] ? 'Pending (Promotion)' :
-        row[IDX.isArchived] ? 'Rejected' :
-        'Pending (Approval)';
-
+      row[IDX.actionStatus] = promoted ? 'Promoted' :
+      row[IDX.isApproved] ? 'Pending (Promotion)' :
+      row[IDX.isArchived] ? 'Rejected' : 'Pending (Approval)';
 
       // Item status derivation
       let itemStatus = 'To be Reviewed';
@@ -602,7 +644,8 @@ function processStagingItems_StateMachine() {
         if (row[IDX.isActive]) itemStatus = 'Promoted (Live)';
         else if (row[IDX.isArchived]) itemStatus = 'Promoted (Archived)';
         else itemStatus = 'Promoted (Hidden Dropdown)';
-      } else {
+      } 
+      else {
         if (row[IDX.isArchived] && !row[IDX.isApproved]) itemStatus = 'Rejected';
         else if (row[IDX.isActive] && !row[IDX.isApproved]) itemStatus = 'Active (Temporary)';
         else if (row[IDX.isApproved] && !row[IDX.isActive]) itemStatus = 'Approved (Hidden Dropdown)';
@@ -615,33 +658,30 @@ function processStagingItems_StateMachine() {
       row[IDX.entityOwner] = promoted ? 'Lookup' : 'Staging';
 
 
-      // Logging + audit
+      /* --- LOGGING --- */
       if (drift.length > 0) {
 
         repaired++;
 
-        const msg =
-          `Integrity drift repaired: ${drift.join(' | ')} — ${timestamp}`;
-
-        row[IDX.notes] = msg;
         row[IDX.integrity] = 'REPAIRED';
+        row[IDX.notes] = `Drift repaired: ${drift.join(' | ')} - ${timestamp}`;
 
         ETI_log_({
           scriptName: SCRIPT_NAME,
           functionName: FUNCTION_NAME,
           sheetName: SRC_SHEET,
-          level: 'WARN',
+          level: 'INFO',
+          rowNumber: i + 1,
           action: 'PROCESS',
           stepName: 'DRIFT_REPAIR',
-          details: `Row=${i+1}, Staging_ID=${stagingId}, ${drift.join(' | ')}`
+          details: `Staging_ID=${stagingId}, ${drift.join(' | ')}`
         });
 
       } else {
-
         valid++;
-
+        
         row[IDX.integrity] = 'VALID';
-        row[IDX.notes] = `Integrity check passed — ${timestamp}`;
+        row[IDX.notes] = `Integrity check passed - ${timestamp}`;
       }
     }
 
@@ -657,7 +697,9 @@ function processStagingItems_StateMachine() {
     /* --- STEP: WRITE_BACK --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'WRITE_BACK');
 
-    stgSh.getRange(2,1,data.length-1,hdr.length).setValues(data.slice(1));
+    if (data.length > 1) {
+      stgSh.getRange(2,1,data.length-1,hdr.length).setValues(data.slice(1));
+    }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'WRITE_BACK');
 
@@ -669,7 +711,7 @@ function processStagingItems_StateMachine() {
       SCRIPT_NAME,
       FUNCTION_NAME,
       SRC_SHEET,
-      `Valid=${valid}, Repaired=${repaired}, Invalid=${invalid}, DurationMs=${durationMs}`
+      `Processed=${processed} | Valid=${valid} | Repaired=${repaired} | Invalid=${invalid} | DurationMs=${durationMs}`
     );
 
 
@@ -929,6 +971,10 @@ function promoteApprovedItems_FromStaging_ToLookup() {
     }
 
 
+    /* --- STEP: PROMOTION --- */
+    ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'PROMOTION');
+
+
     /* 
     ---------------------------------------------------------
     PROCESS LOOP [PROMOTE APPROVED ITEMS]
@@ -983,7 +1029,6 @@ function promoteApprovedItems_FromStaging_ToLookup() {
         }
 
         flushLogs_();
-
         shouldExit = true;
         break;
       }
@@ -1040,16 +1085,17 @@ function promoteApprovedItems_FromStaging_ToLookup() {
         functionName: FUNCTION_NAME,
         sheetName: TGT_SHEET,
         level: 'INFO',
+        rowNumber: rowNum,
         action: 'PROCESS',
         stepName: 'PROMOTION',
         details:
-          `Row=${rowNum}, Staging_ID=${stagingId}, Item_ID=${itemIdMachine}, Item_Name=${finalName}`
+          `Staging_ID=${stagingId}, Item_ID=${itemIdMachine}, Item_Name=${finalName}`
       });
 
       promoted++;
 
       /* --- PERIODIC FLUSH --- */
-      if (i % 200 === 0) {
+      if (i % 240 === 0) {
 
         if (lookupAppendRows.length > 0) {
           lkSh.getRange(
@@ -1079,7 +1125,6 @@ function promoteApprovedItems_FromStaging_ToLookup() {
       }
     }
 
-
     if (promoted === 0) {
       ETI_logNotice_(
         SCRIPT_NAME,
@@ -1089,7 +1134,6 @@ function promoteApprovedItems_FromStaging_ToLookup() {
         'No items eligible for promotion'
       );
     }
-
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'PROMOTION');
 
@@ -1139,7 +1183,7 @@ function promoteApprovedItems_FromStaging_ToLookup() {
       SCRIPT_NAME,
       FUNCTION_NAME,
       TGT_SHEET,
-      `Scanned=${scanned}, Promoted=${promoted}, Skipped=${skipped}, DurationMs=${durationMs}`
+      `Scanned=${scanned} | Promoted=${promoted} | Skipped=${skipped} | DurationMs=${durationMs}`
     );
 
 
@@ -1174,6 +1218,7 @@ function promoteApprovedItems_FromStaging_ToLookup() {
     flushLogs_();
   }
 }
+
 
 /* 
 =========================================================
@@ -1239,7 +1284,6 @@ function promoteApprovedItems_FromStaging_ToLookup() {
  * - Required sheet missing
  * - Required column missing
  */
-
 
 function backfill_ItemIDs_Machine_LookupItems() {
 
@@ -1334,7 +1378,7 @@ function backfill_ItemIDs_Machine_LookupItems() {
         rowNumber: rowNum,
         action: 'PROCESS',
         stepName: 'GENERATE_ID',
-        details: `Generated Item_ID_Machine: ${newId}`
+        details: `Generated Item_ID_Machine: ${newId} | Item=${name}`
       });
     }
 
@@ -1389,7 +1433,6 @@ function backfill_ItemIDs_Machine_LookupItems() {
     flushLogs_();
   }
 }
-
 
 
 /* 

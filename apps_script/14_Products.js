@@ -51,15 +51,19 @@ FUNCTION: PRODUCT STAGING POPULATION
 
 function populateStagingLookupProducts_FromTransactionResolution() {
 
-  /* --- FUNCTION-LEVEL CONSTANTS --- */
-  const SCRIPT_NAME   = 'Products';
+  /* --- FUNCTION-LEVEL CONSTANTS & STATE --- */
+  const SCRIPT_NAME = 'Products';
   const FUNCTION_NAME = 'populateStagingLookupProducts_FromTransactionResolution';
-
   const SRC_SHEET = 'Transaction_Resolution';
   const TGT_SHEET = 'Staging_Lookup_Products';
 
   const t0 = new Date();
-  let shouldExit = false; //
+  let shouldExit = false;
+
+  /*
+  ============================================
+  CORE EXECUTION BLOCK
+  ============================================*/
   try {
 
     /* --- INITIALIZATION --- */
@@ -69,12 +73,10 @@ function populateStagingLookupProducts_FromTransactionResolution() {
     const tsSh = ss.getSheetByName(SRC_SHEET);
     const stgSh = ss.getSheetByName(TGT_SHEET);
 
-    if (!tsSh || !stgSh) {
-      throw new Error('Required sheet not found');
-    }
+    if (!tsSh || !stgSh) throw new Error('Required sheet not found');
 
 
-    /* --- STEP: PREPARE STAGING CONTEXT --- */
+    /* --- STEP: LOAD_STAGING --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_STAGING');
 
     const stgData = stgSh.getDataRange().getValues();
@@ -82,8 +84,9 @@ function populateStagingLookupProducts_FromTransactionResolution() {
     const stgCol = n => stgHdr.indexOf(n);
 
     const IDX_STG = {
-      sourceItemName: stgCol('Source_Item_Name'),
-      sourceBrandName: stgCol('Source_Brand_Name'),
+      sourceTxn: stgCol('Source_Txn_ID_Machine'),
+      stagingId: stgCol('Staging_Product_ID_Machine'),
+      mappedId: stgCol('Mapped_Product_ID_Machine'),
       entered: stgCol('Product_Name_Entered'),
       canon: stgCol('Product_Name_Canonical'),
       approvedName: stgCol('Product_Name_Approved'),
@@ -94,15 +97,14 @@ function populateStagingLookupProducts_FromTransactionResolution() {
       isPromoted: stgCol('Is_Lookup_Promoted'),
       populatedAt: stgCol('Populated_At'),
       notes: stgCol('Notes'),
-      stagingId: stgCol('Staging_Product_ID_Machine'),
-      mappedId: stgCol('Mapped_Product_ID_Machine'),
-      sourceTxn: stgCol('Source_Txn_ID_Machine'),
+      sourceItemName: stgCol('Source_Item_Name'),
+      sourceBrandName: stgCol('Source_Brand_Name'),
       sourceItem: stgCol('Source_Item_ID_Machine'),
-      sourceProduct: stgCol('Source_Product_ID_Machine')
+      sourceBrand: stgCol('Source_Brand_ID_Machine')
     };
 
     for (const [k,v] of Object.entries(IDX_STG)) {
-      if (v === -1) throw new Error(`Staging_Lookup_Products missing column: ${k}`);
+      if (v === -1) throw new Error(`Missing column: ${k}`);
     }
 
     // Build canonical dedupe set (already staged)
@@ -115,7 +117,7 @@ function populateStagingLookupProducts_FromTransactionResolution() {
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_STAGING');
 
 
-    /* --- STEP: LOAD TRANSACTION SOURCE --- */
+    /* --- STEP: LOAD_TXN --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_TXN');
 
     const tsData = tsSh.getDataRange().getValues();
@@ -125,11 +127,15 @@ function populateStagingLookupProducts_FromTransactionResolution() {
     const IDX = {
       txnId: tsCol('Txn_ID_Machine'),
       itemId: tsCol('Item_ID_Machine'),
-      productId: tsCol('Product_ID_Machine'),
+      productEntered: tsCol('Product_Name_Entered'),
+      productCanon: tsCol('Product_Name_Canonical'),
+      
+      
       itemName: tsCol('Item_Name_Entered'),
       brandName: tsCol('Brand_Name_Entered'),
-      productEntered: tsCol('Product_Name_Entered'),
-      productCanon: tsCol('Product_Name_Canonical')
+      brandId: tsCol('Brand_ID_Machine'),
+      productId: tsCol('Product_ID_Machine')
+
     };
 
     for (const [k,v] of Object.entries(IDX)) {
@@ -139,48 +145,54 @@ function populateStagingLookupProducts_FromTransactionResolution() {
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_TXN');
 
 
+    /* --- VALIDATION: SOURCE DATA --- */
     if (tsData.length <= 1) {
-      ETI_logSkip_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'SRC_Table contains no data rows. Verify!');
+      ETI_logSkip_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'No source data');
       ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
       return;
     }
 
 
-    /*
+    /* 
     ---------------------------------------------------------
-    PROCESS LOOP
-    ---------------------------------------------------------*/
-    // Scan transactions → extract unresolved product canonicals
-    // Apply validation + deduplication
-    // Construct staging rows
-    
+    PROCESS LOOP [STAGE NEW PRODUCTS]
+    --------------------------------------------------------- */
     let scanned = 0;
     let skipNoTxn = 0;
     let skipHasProduct = 0;
     let skipNoCanon = 0;
     let skipDuplicateCanon = 0;
+    let insertedCount = 0;
 
     const rowsToAppend = [];
 
     for (let i = 1; i < tsData.length; i++) {
 
       scanned++;
-
       const r = tsData[i];
 
       // Skip rows without transaction identity (invalid source)
-      if (!r[IDX.txnId]) { skipNoTxn++; continue; }
+      if (!r[IDX.txnId]) { 
+        skipNoTxn++; 
+        continue; }
 
       // Skip already resolved products
-      if (r[IDX.productId]) { skipHasProduct++; continue; }
+      if (r[IDX.productId]) { 
+        skipHasProduct++; 
+        continue; }
 
       const canon = r[IDX.productCanon];
 
       // Skip rows without canonical (cannot stage)
-      if (!canon) { skipNoCanon++; continue; }
+      if (!canon) { 
+        skipNoCanon++; 
+        continue; }
 
       // Skip already staged canonical (dedupe)
-      if (stagingCanonSet.has(canon)) { skipDuplicateCanon++; continue; }
+      if (stagingCanonSet.has(canon)) { 
+        skipDuplicateCanon++; 
+        continue; 
+      }
 
       /* --- SCHEDULER CHECK --- */
       if (shouldExitForTimeout_(t0)) {
@@ -194,9 +206,9 @@ function populateStagingLookupProducts_FromTransactionResolution() {
           ).setValues(rowsToAppend);
 
           rowsToAppend.length = 0;
+
           flushLogs_();
         }
-
         shouldExit = true;
         break;
       }
@@ -204,31 +216,30 @@ function populateStagingLookupProducts_FromTransactionResolution() {
       // Construct staging row
       const row = new Array(stgHdr.length).fill('');
 
-      row[IDX_STG.sourceItemName] = r[IDX.itemName];
-      row[IDX_STG.sourceBrandName] = r[IDX.brandName];
-
+      
+      row[IDX_STG.sourceTxn] = r[IDX.txnId];
+      row[IDX_STG.stagingId] = Utilities.getUuid();
       row[IDX_STG.entered] = r[IDX.productEntered];
       row[IDX_STG.canon] = canon;
-      row[IDX_STG.approvedName] = '';
-
       row[IDX_STG.adminAction] = 'Review';
-
+      row[IDX_STG.approvedName] = '';
       row[IDX_STG.isApproved] = false;
       row[IDX_STG.isActive] = false;
       row[IDX_STG.isArchived] = false;
       row[IDX_STG.isPromoted] = false;
-
-      row[IDX_STG.sourceTxn] = r[IDX.txnId];
-      row[IDX_STG.sourceItem] = r[IDX.itemId];
-      row[IDX_STG.sourceProduct] = r[IDX.productId];
-
-      row[IDX_STG.stagingId] = Utilities.getUuid();
-      row[IDX_STG.mappedId] = '';
-
       row[IDX_STG.populatedAt] = new Date();
       row[IDX_STG.notes] = 'Staged from Transaction_Resolution';
 
+      row[IDX_STG.sourceItemName] = r[IDX.itemName];
+      row[IDX_STG.sourceBrandName] = r[IDX.brandName];
+      row[IDX_STG.sourceItem] = r[IDX.itemId];
+      row[IDX_STG.sourceBrand] = r[IDX.brandId];
+      row[IDX_STG.mappedId] = '';
+
+      // Append to buffer for batch write
       rowsToAppend.push(row);
+      insertedCount++;
+      stagingCanonSet.add(canon);
 
       // Log mutation (row-level trace)
       ETI_log_({
@@ -239,33 +250,46 @@ function populateStagingLookupProducts_FromTransactionResolution() {
         rowNumber: i + 1,
         action: 'PROCESS',
         stepName: 'WRITE_OUTPUT',
-        details: `Txn_ID=${r[IDX.txnId]}, Canonical=${canon}`
+        details: `Txn_ID=${r[IDX.txnId]}, Product_Canonical=${canon}`
       });
 
-      stagingCanonSet.add(canon);
+
+      /* --- PERIODIC FLUSH --- */
+      if (i % 240 === 0 && rowsToAppend.length > 0) {
+
+        stgSh.getRange(
+          stgSh.getLastRow() + 1,
+          1,
+          rowsToAppend.length,
+          stgHdr.length
+        ).setValues(rowsToAppend);
+
+        rowsToAppend.length = 0;
+        flushLogs_();
+      }
     }
 
 
-    /* --- STEP: WRITE OUTPUT --- */
+    /* --- STEP: WRITE_OUTPUT --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_OUTPUT');
 
     if (rowsToAppend.length > 0) {
-
       stgSh.getRange(
         stgSh.getLastRow() + 1,
         1,
         rowsToAppend.length,
         stgHdr.length
       ).setValues(rowsToAppend);
-    } else {
 
-      /* --- NOTICE — NO INSERT --- */
+      flushLogs_();
+    } 
+    else {
       ETI_logNotice_(
         SCRIPT_NAME,
         FUNCTION_NAME,
         TGT_SHEET,
         'WRITE_OUTPUT',
-        'No rows to write (0 inserts)'
+        'No new products to stage'
       );
     }
 
@@ -274,12 +298,13 @@ function populateStagingLookupProducts_FromTransactionResolution() {
 
     /* --- SUMMARY --- */
     const durationMs = new Date().getTime() - t0.getTime();
+    const effectiveProcessed = scanned - skipNoTxn - skipHasProduct - skipNoCanon - skipDuplicateCanon;
 
     ETI_logSummary_(
       SCRIPT_NAME,
       FUNCTION_NAME,
       TGT_SHEET,
-      `Scanned=${scanned} | Inserted=${rowsToAppend.length} | ` +
+      `Scanned=${scanned} | Effective=${effectiveProcessed} | Inserted=${insertedCount} | ` +
       `Skipped: NoTxn=${skipNoTxn}, HasProduct=${skipHasProduct}, NoCanon=${skipNoCanon}, Duplicate=${skipDuplicateCanon} | ` +
       `DurationMs=${durationMs}`
     );
@@ -295,18 +320,28 @@ function populateStagingLookupProducts_FromTransactionResolution() {
     }
 
     ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
+  }
 
-  } catch (err) {
+
+  /*
+  ============================================
+  ERROR BLOCK
+  ============================================*/
+  catch (err) {
 
     ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, err, 'MAIN');
     throw err;
+  }
 
-  } finally {
 
+  /*
+  ============================================
+  FINALIZATION BLOCK
+  ============================================*/
+  finally {
     flushLogs_();
   }
 }
-
 
 
 /* 
@@ -360,16 +395,20 @@ FUNCTION: PRODUCT STATE MACHINE PROCESSOR
  * - Required column missing
  */
 
-
 function processStagingProducts_StateMachine() {
 
-  /* --- FUNCTION-LEVEL CONSTANTS --- */
-  const SCRIPT_NAME   = 'Products';
+    /* --- FUNCTION-LEVEL CONSTANTS & STATE --- */
+  const SCRIPT_NAME = 'Products';
   const FUNCTION_NAME = 'processStagingProducts_StateMachine';
-  const SRC_SHEET     = 'Staging_Lookup_Products';
+  const SRC_SHEET = 'Staging_Lookup_Products';
 
   const t0 = new Date();
-  let shouldExit = false; // 
+  let shouldExit = false;
+
+  /*
+  ============================================
+  CORE EXECUTION BLOCK
+  ============================================*/
   try {
 
     /* --- INITIALIZATION --- */
@@ -377,11 +416,9 @@ function processStagingProducts_StateMachine() {
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const stgSh = ss.getSheetByName(SRC_SHEET);
-
     if (!stgSh) throw new Error('Staging_Lookup_Products sheet missing');
 
-
-    /* --- STEP: LOAD DATA --- */
+    /* --- STEP: LOAD_DATA --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'LOAD_DATA');
 
     const data = stgSh.getDataRange().getValues();
@@ -390,30 +427,36 @@ function processStagingProducts_StateMachine() {
 
     const IDX = {
       adminAction: col('Admin_Action'),
+
       isApproved: col('Is_Approved'),
       isActive: col('Is_Active'),
       isArchived: col('Is_Archived'),
       isPromoted: col('Is_Lookup_Promoted'),
+
       pipelineReady: col('Is_Pipeline_ready'),
       validState: col('Valid_State'),
+
       actionStatus: col('Action_Review_Status'),
       productStatus: col('Product_Status'),
+
       entityOwner: col('Entity_Owner'),
       integrity: col('Integrity_Status'),
+
       notes: col('Notes'),
       stagingId: col('Staging_Product_ID_Machine')
     };
 
-    for (const [k,v] of Object.entries(IDX)) {
+    for (const [k, v] of Object.entries(IDX)) {
       if (v === -1) throw new Error(`Missing column: ${k}`);
     }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'LOAD_DATA');
 
 
-    /* --- STEP: STATE MACHINE PROCESSING --- */
-    ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'STATE_MACHINE');
+    /* --- STEP: DRIFT_REPAIR --- */
+    ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'DRIFT_REPAIR');
 
+    let processed = 0;
     let repaired = 0;
     let valid = 0;
     let invalid = 0;
@@ -421,27 +464,24 @@ function processStagingProducts_StateMachine() {
     const timestamp = Utilities.formatDate(
       new Date(),
       Session.getScriptTimeZone(),
-      "EEEE, MMMM d, yyyy 'at' HH:mm:ss"
+      "yyyy-MM-dd HH:mm:ss"
     );
 
 
     /*
     ---------------------------------------------------------
-    PROCESS LOOP
-    ---------------------------------------------------------*/
-    // Apply Admin_Action → governance state mapping
-    // Repair drift between expected and actual state
-    // Validate state integrity
-    // Derive dependent governance fields
-    
+    PROCESS LOOP [STATE TRANSITION + DRIFT REPAIR]
+    --------------------------------------------------------- */
     for (let i = 1; i < data.length; i++) {
 
       const row = data[i];
       const admin = row[IDX.adminAction];
       const stagingId = row[IDX.stagingId];
 
-      // Skip rows without Admin_Action (no processing required)
+      // Skip rows without admin intent
       if (!admin) continue;
+
+      processed++;
 
       /* --- SCHEDULER CHECK --- */
       if (shouldExitForTimeout_(t0)) {
@@ -450,46 +490,42 @@ function processStagingProducts_StateMachine() {
         break;
       }
 
+      // Resolve expected state from Admin_Action
+      let expected = { approved:false, active:false, archived:false };
+
       // Map Admin_Action → expected governance state
-      let expected = { approved: false, active: false, archived: false };
+      switch(admin) {
 
-      switch (admin) {
-
-        case 'Review': 
-        break;
-
-        case 'Activate':
-          expected.active = true;
-          break;
-
-        case 'Approve (UI Hidden)':
-          expected.approved = true;
-          break;
-
+        case 'Review': break;
+        case 'Activate': expected.active = true; break;
+        case 'Approve (UI Hidden)': expected.approved = true; break;
         case 'Approve & Activate':
-          expected.approved = true;
-          expected.active = true;
-          break;
-
+          expected.approved = true; expected.active = true; break;
         case 'Approve but Deprecate':
-          expected.approved = true;
-          expected.archived = true;
-          break;
-
+          expected.approved = true; expected.archived = true; break;
         case 'Reject':
-          expected.archived = true;
-          break;
+          expected.archived = true; break;
 
         default:
-          // Invalid admin action → mark integrity failure
           invalid++;
           row[IDX.integrity] = 'INVALID_ADMIN_ACTION';
+
+          ETI_log_({
+            scriptName: SCRIPT_NAME,
+            functionName: FUNCTION_NAME,
+            sheetName: SRC_SHEET,
+            level: 'ERROR',
+            rowNumber: i + 1,
+            action: 'PROCESS',
+            stepName: 'DRIFT_REPAIR',
+            details: `Staging_ID=${stagingId}, Invalid Admin_Action=${admin}`
+          });
           continue;
       }
 
       let drift = [];
 
-      // Repair drift in governance flags (expected vs actual)
+      // Repair drift in binary flags
       function repair(idx, expectedVal, name) {
         if (row[idx] !== expectedVal) {
           drift.push(`${name} expected=${expectedVal} found=${row[idx]}`);
@@ -502,7 +538,7 @@ function processStagingProducts_StateMachine() {
       repair(IDX.isArchived, expected.archived, 'Is_Archived');
 
 
-      // Validate state constraints (invalid combinations)
+      // Validate state constraints
       const promoted = row[IDX.isPromoted];
 
       const validState =
@@ -514,24 +550,31 @@ function processStagingProducts_StateMachine() {
       if (!validState) {
         row[IDX.integrity] = 'INVALID_STATE';
         invalid++;
+
+        ETI_log_({
+          scriptName: SCRIPT_NAME,
+          functionName: FUNCTION_NAME,
+          sheetName: SRC_SHEET,
+          level: 'ERROR',
+          rowNumber: i + 1,
+          action: 'PROCESS',
+          stepName: 'DRIFT_REPAIR',
+          details: `Staging_ID=${stagingId}, Invalid State`
+        });
+
         continue;
       }
 
-
       /* --- DERIVE GOVERNANCE FIELDS --- */
+      // Pipeline readiness
+      row[IDX.pipelineReady] = row[IDX.isApproved] && !promoted && validState;
 
-      // Pipeline readiness → eligible for promotion
-      row[IDX.pipelineReady] =
-        row[IDX.isApproved] && !promoted && validState;
-
-      // Review status lifecycle
-      row[IDX.actionStatus] =
-        promoted ? 'Promoted' :
+      // Review status
+      row[IDX.actionStatus] = promoted ? 'Promoted' :
         row[IDX.isApproved] ? 'Pending (Promotion)' :
-        row[IDX.isArchived] ? 'Rejected' :
-        'Pending (Approval)';
+      row[IDX.isArchived] ? 'Rejected' : 'Pending (Approval)';
 
-      // Product status derivation (UI representation)
+      // Product status derivation
       let productStatus = 'To be Reviewed';
 
       if (promoted) {
@@ -547,62 +590,50 @@ function processStagingProducts_StateMachine() {
       }
 
       row[IDX.productStatus] = productStatus;
-
-      // Ownership transition (Staging → Lookup)
       row[IDX.entityOwner] = promoted ? 'Lookup' : 'Staging';
 
-
-      // Logging + integrity tagging
+      /* --- LOGGING --- */
       if (drift.length > 0) {
-
         repaired++;
 
-        const msg =
-          `Integrity drift repaired: ${drift.join(' | ')} — ${timestamp}`;
-
-        row[IDX.notes] = msg;
         row[IDX.integrity] = 'REPAIRED';
+        row[IDX.notes] = `Drift repaired: ${drift.join(' | ')} - ${timestamp}`;
 
-        // Log drift repair event
         ETI_log_({
           scriptName: SCRIPT_NAME,
           functionName: FUNCTION_NAME,
           sheetName: SRC_SHEET,
-          level: 'WARN',
+          level: 'INFO',
+          rowNumber: i + 1,
           action: 'PROCESS',
-          stepName: 'STATE_MACHINE',
-          details: `Row=${i+1}, Staging_ID=${stagingId}, ${drift.join(' | ')}`
+          stepName: 'DRIFT_REPAIR',
+          details: `Staging_ID=${stagingId}, ${drift.join(' | ')}`
         });
 
       } else {
-
         valid++;
-
+        
         row[IDX.integrity] = 'VALID';
-        row[IDX.notes] = `Integrity check passed — ${timestamp}`;
+        row[IDX.notes] = `Integrity check passed - ${timestamp}`;
       }
     }
 
 
-    // No-op notice (no drift or invalid state)
+    // No-op notice
     if (repaired === 0 && invalid === 0) {
-      ETI_logNotice_(
-        SCRIPT_NAME,
-        FUNCTION_NAME,
-        SRC_SHEET,
-        'STATE_MACHINE',
-        'No drift detected'
-      );
+      ETI_logNotice_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'DRIFT_REPAIR', 'No drift detected');
     }
 
-    ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'STATE_MACHINE');
+    ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'DRIFT_REPAIR');
 
 
-    /* --- STEP: WRITE BACK --- */
+    /* --- STEP: WRITE_BACK --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'WRITE_BACK');
 
-    stgSh.getRange(2, 1, data.length - 1, hdr.length)
-      .setValues(data.slice(1));
+    if (data.length > 1) {
+      stgSh.getRange(2, 1, data.length - 1, hdr.length)
+        .setValues(data.slice(1));
+    }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'WRITE_BACK');
 
@@ -614,7 +645,7 @@ function processStagingProducts_StateMachine() {
       SCRIPT_NAME,
       FUNCTION_NAME,
       SRC_SHEET,
-      `Valid=${valid}, Repaired=${repaired}, Invalid=${invalid}, DurationMs=${durationMs}`
+      `Processed=${processed} | Valid=${valid} | Repaired=${repaired} | Invalid=${invalid} | DurationMs=${durationMs}`
     );
 
 
@@ -628,17 +659,28 @@ function processStagingProducts_StateMachine() {
     }
 
     ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET);
+  }
 
-  } catch (err) {
-
+  
+  /*
+  ============================================
+  ERROR BLOCK
+  ============================================*/
+  catch (err) {
     ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, err, 'MAIN');
     throw err;
+  }
 
-  } finally {
 
+  /*
+  ============================================
+  FINALIZATION BLOCK
+  ============================================*/
+  finally {
     flushLogs_();
   }
 }
+
 
 
 /* 
@@ -691,10 +733,9 @@ FUNCTION: PRODUCT PROMOTION TO LOOKUP
  * - Required sheet missing
  * - Required column missing
  */
-
 function promoteApprovedProducts_FromStaging_ToLookup() {
 
-  /* --- FUNCTION-LEVEL CONSTANTS --- */
+  /* --- FUNCTION-LEVEL CONSTANTS & STATE --- */
   const SCRIPT_NAME   = 'Products';
   const FUNCTION_NAME = 'promoteApprovedProducts_FromStaging_ToLookup';
   const SRC_SHEET     = 'Staging_Lookup_Products';
@@ -703,6 +744,11 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
   const t0 = new Date();
   let shouldExit = false;
 
+
+  /*
+  ============================================
+  CORE EXECUTION BLOCK
+  ============================================*/
   try {
 
     /* --- INITIALIZATION --- */
@@ -715,7 +761,7 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
     if (!stgSh || !lkSh) throw new Error('Required sheet not found');
 
 
-    /* --- STEP: LOAD LOOKUP --- */
+    /* --- STEP: LOAD_LOOKUP --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_LOOKUP');
 
     const lkData = lkSh.getDataRange().getValues();
@@ -728,7 +774,6 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
       isApproved: lkCol('Is_Approved'),
       isActive: lkCol('Is_Active'),
       isArchived: lkCol('Is_Archived'),
-      productStatus: lkCol('Product_Status'),
       isStgPromoted: lkCol('Is_Staging_Promoted'),
       sourceType: lkCol('Source_Type'),
       createdAt: lkCol('Created_At'),
@@ -744,7 +789,7 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_LOOKUP');
 
 
-    /* --- STEP: LOAD STAGING --- */
+    /* --- STEP: LOAD_STAGING --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_STAGING');
 
     const stgData = stgSh.getDataRange().getValues();
@@ -785,19 +830,20 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
     }
 
 
-
-    /*
-    ---------------------------------------------------------
-    PROCESS LOOP
-    --------------------------------------------------------*/
+    /* --- STEP: PROMOTION --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'PROMOTION');
 
-    const lookupAppendRows = [];
-    const stagingUpdates   = [];
 
+    /* 
+    ---------------------------------------------------------
+    PROCESS LOOP [PROMOTE APPROVED ITEMS]
+    --------------------------------------------------------- */
     let scanned = 0;
     let promoted = 0;
     let skipped = 0;
+
+    const lookupAppendRows = [];
+    const stagingUpdates = [];
 
     for (let i = 1; i < stgData.length; i++) {
 
@@ -806,17 +852,41 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
       const rowNum = i + 1;
       const r = stgData[i];
 
-      // Eligibility: only rows ready for promotion
+      // Eligibility checks: rows ready for promotion
       if (r[IDX_STG.reviewStatus] !== 'Pending (Promotion)') { skipped++; continue; }
-      if (!r[IDX_STG.pipelineReady]) { skipped++; continue; }
+      if (r[IDX_STG.pipelineReady] !== true) { skipped++; continue; }
       if (r[IDX_STG.isPromoted] === true) { skipped++; continue; }
 
-      // Resolve final Product name (Approved → fallback Entered)
       const finalName = r[IDX_STG.approved] || r[IDX_STG.entered];
       if (!finalName) { skipped++; continue; }
 
       /* --- SCHEDULER CHECK --- */
       if (shouldExitForTimeout_(t0)) {
+
+        if (lookupAppendRows.length > 0) {
+          lkSh.getRange(
+            lkSh.getLastRow() + 1,
+            1,
+            lookupAppendRows.length,
+            lookupAppendRows[0].length
+          ).setValues(lookupAppendRows);
+          lookupAppendRows.length = 0;
+        }
+
+        if (stagingUpdates.length > 0) {
+          for (const u of stagingUpdates) {
+            stgSh.getRange(u.row, IDX_STG.mappedId+1).setValue(u.mappedId);
+            stgSh.getRange(u.row, IDX_STG.isPromoted+1).setValue(true);
+            stgSh.getRange(u.row, IDX_STG.reviewStatus+1).setValue('Promoted');
+            stgSh.getRange(u.row, IDX_STG.entityOwner+1).setValue('Lookup');
+            stgSh.getRange(u.row, IDX_STG.promotionLabel+1).setValue('Promoted');
+            stgSh.getRange(u.row, IDX_STG.promotedAt+1).setValue(new Date());
+            stgSh.getRange(u.row, IDX_STG.productStatus+1).setValue(u.status);
+            stgSh.getRange(u.row, IDX_STG.notes+1).setValue(u.note);
+          }
+          stagingUpdates.length = 0;
+        }
+
         flushLogs_();
         shouldExit = true;
         break;
@@ -825,49 +895,32 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
       const canon = r[IDX_STG.canon] || '';
       const stagingId = r[IDX_STG.stagingId];
 
-      // Generate unique Product_ID_Machine (UUID)
+      // Generate unique Item_ID_Machine (UUID)
       const productIdMachine = Utilities.getUuid();
 
+      // Create lookup row
+      const newRow = new Array(lkHdr.length).fill('');
+      newRow[IDX_LK.productName] = finalName;
+      newRow[IDX_LK.productCanon] = canon;
+      newRow[IDX_LK.isApproved] = r[IDX_STG.isApproved];
+      newRow[IDX_LK.isActive]   = r[IDX_STG.isActive];
+      newRow[IDX_LK.isArchived] = r[IDX_STG.isArchived];
+      newRow[IDX_LK.isStgPromoted] = true;
+      newRow[IDX_LK.sourceType] = 'STAGING_PROMOTION';
+      newRow[IDX_LK.createdAt] = new Date();
+      newRow[IDX_LK.productIdMachine] = productIdMachine;
+      newRow[IDX_LK.stagingId] = stagingId;
+      newRow[IDX_LK.notes] = `Promoted from staging → Staging_ID=${stagingId}`;
 
-      // Construct lookup row (target table)
-      const newLookupRow = new Array(lkHdr.length).fill('');
+      lookupAppendRows.push(newRow);
 
-      newLookupRow[IDX_LK.productName] = finalName;
-      newLookupRow[IDX_LK.productCanon] = canon;
-
-      newLookupRow[IDX_LK.isApproved] = r[IDX_STG.isApproved];
-      newLookupRow[IDX_LK.isActive]   = r[IDX_STG.isActive];
-      newLookupRow[IDX_LK.isArchived] = r[IDX_STG.isArchived];
-      newLookupRow[IDX_LK.productStatus] = r[IDX_STG.productStatus];
-      newLookupRow[IDX_LK.isStgPromoted] = true;
-      newLookupRow[IDX_LK.sourceType] = 'STAGING_PROMOTION';
-
-      newLookupRow[IDX_LK.createdAt] = new Date();
-
-      newLookupRow[IDX_LK.productIdMachine] = productIdMachine;
-      newLookupRow[IDX_LK.stagingId] = stagingId;
-
-      newLookupRow[IDX_LK.sourceItem] = r[IDX_STG.sourceItem];
-      newLookupRow[IDX_LK.sourceBrand] = r[IDX_STG.sourceBrand];
-
-      newLookupRow[IDX_LK.notes] =
-        `Promoted from staging → Staging_ID=${stagingId}`;
-
-      lookupAppendRows.push(newLookupRow);
-
-
-      // Prepare staging update (post-promotion state)
+      // Prepare staging update
       let promotedStatus = '';
-
-      if (r[IDX_STG.isApproved] && r[IDX_STG.isArchived])
-        promotedStatus = 'Promoted (Archived)';
-      else if (r[IDX_STG.isApproved] && r[IDX_STG.isActive])
-        promotedStatus = 'Promoted (Live)';
-      else if (r[IDX_STG.isApproved])
-        promotedStatus = 'Promoted (Hidden Dropdown)';
+      if (r[IDX_STG.isApproved] && r[IDX_STG.isArchived]) promotedStatus = 'Promoted (Archived)';
+      else if (r[IDX_STG.isApproved] && r[IDX_STG.isActive]) promotedStatus = 'Promoted (Live)';
+      else if (r[IDX_STG.isApproved]) promotedStatus = 'Promoted (Hidden Dropdown)';
 
       const existingNote = r[IDX_STG.notes] || '';
-
       const newNote =
         (existingNote ? existingNote + ' | ' : '') +
         `Promoted to Lookup_Products → Product_ID_Machine=${productIdMachine}`;
@@ -879,38 +932,59 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
         status: promotedStatus
       });
 
-
-      // Log promotion (row-level trace)
+      // Log mutation
       ETI_log_({
         scriptName: SCRIPT_NAME,
         functionName: FUNCTION_NAME,
         sheetName: TGT_SHEET,
         level: 'INFO',
+        rowNumber: rowNum,
         action: 'PROCESS',
         stepName: 'PROMOTION',
-        details:
-          `Row=${rowNum}, Staging_ID=${stagingId}, Product_ID=${productIdMachine}, Product_Name=${finalName}`
+        details: `Staging_ID=${stagingId}, Product_ID=${productIdMachine}, Product_Name=${finalName}`
       });
 
       promoted++;
+
+      /* --- PERIODIC FLUSH --- */
+      if (i % 240 === 0) {
+
+        if (lookupAppendRows.length > 0) {
+          lkSh.getRange(
+            lkSh.getLastRow() + 1,
+            1,
+            lookupAppendRows.length,
+            lookupAppendRows[0].length
+          ).setValues(lookupAppendRows);
+          lookupAppendRows.length = 0;
+        }
+
+        if (stagingUpdates.length > 0) {
+          for (const u of stagingUpdates) {
+            stgSh.getRange(u.row, IDX_STG.mappedId + 1).setValue(u.mappedId);
+            stgSh.getRange(u.row, IDX_STG.isPromoted + 1).setValue(true);
+            stgSh.getRange(u.row, IDX_STG.reviewStatus + 1).setValue('Promoted');
+            stgSh.getRange(u.row, IDX_STG.entityOwner + 1).setValue('Lookup');
+            stgSh.getRange(u.row, IDX_STG.promotionLabel + 1).setValue('Promoted');
+            stgSh.getRange(u.row, IDX_STG.promotedAt + 1).setValue(new Date());
+            stgSh.getRange(u.row, IDX_STG.productStatus + 1).setValue(u.status);
+            stgSh.getRange(u.row, IDX_STG.notes + 1).setValue(u.note);
+          }
+          stagingUpdates.length = 0;
+        }
+
+        flushLogs_();
+      }
     }
 
-
-    // No-op notice (no eligible promotions)
     if (promoted === 0) {
-      ETI_logNotice_(
-        SCRIPT_NAME,
-        FUNCTION_NAME,
-        TGT_SHEET,
-        'PROMOTION',
-        'No products eligible for promotion'
-      );
+      ETI_logNotice_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'PROMOTION', 'No products eligible for promotion');
     }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'PROMOTION');
 
 
-    /* --- STEP: WRITE LOOKUP --- */
+    /* --- STEP: WRITE_LOOKUP --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_LOOKUP');
 
     if (lookupAppendRows.length > 0) {
@@ -918,14 +992,16 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
         lkSh.getLastRow() + 1,
         1,
         lookupAppendRows.length,
-        lookupAppendRows[0].length
-      ).setValues(lookupAppendRows);
+        lookupAppendRows[0].length)
+          .setValues(lookupAppendRows);
+
+          flushLogs_();
     }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_LOOKUP');
 
 
-    /* --- STEP: WRITE BACK STAGING --- */
+    /* --- STEP: WRITE_BACK_STAGING --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_BACK_STAGING');
 
     for (const u of stagingUpdates) {
@@ -939,41 +1015,52 @@ function promoteApprovedProducts_FromStaging_ToLookup() {
       stgSh.getRange(u.row, IDX_STG.notes + 1).setValue(u.note);
     }
 
+    if (stagingUpdates.length > 0) {
+      flushLogs_();
+    }
+
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_BACK_STAGING');
 
 
     /* --- SUMMARY --- */
     const durationMs = new Date().getTime() - t0.getTime();
 
-    ETI_logSummary_(
-      SCRIPT_NAME,
-      FUNCTION_NAME,
-      TGT_SHEET,
-      `Scanned=${scanned}, Promoted=${promoted}, Skipped=${skipped}, DurationMs=${durationMs}`
-    );
+    ETI_logSummary_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET,
+      `Scanned=${scanned} | Promoted=${promoted} | Skipped=${skipped} | DurationMs=${durationMs}`);
 
 
     /* --- SCHEDULER EXIT --- */
     if (shouldExit) {
-      return exitAndScheduleContinuation_(
-        SCRIPT_NAME,
-        FUNCTION_NAME,
+      return exitAndScheduleContinuation_(SCRIPT_NAME, FUNCTION_NAME, 
         { pipelineName: getExecutionContext_()?.pipeline_name }
       );
     }
 
     ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
+  }
 
-  } catch (err) {
 
+  /*
+  ============================================
+  ERROR BLOCK
+  ============================================*/
+  catch (err) {
     ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, err, 'MAIN');
     throw err;
+  }
 
-  } finally {
 
+  /*
+  ============================================
+  FINALIZATION BLOCK
+  ============================================*/
+  finally {
     flushLogs_();
   }
 }
+
+
+
 
 
 

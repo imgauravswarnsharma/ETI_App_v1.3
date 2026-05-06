@@ -54,7 +54,6 @@ function populateStagingLookupBrands_FromTransactionResolution() {
   /* --- FUNCTION-LEVEL CONSTANTS & STATE --- */
   const SCRIPT_NAME = 'Brands';
   const FUNCTION_NAME = 'populateStagingLookupBrands_FromTransactionResolution';
-
   const SRC_SHEET = 'Transaction_Resolution';
   const TGT_SHEET = 'Staging_Lookup_Brands';
 
@@ -74,9 +73,7 @@ function populateStagingLookupBrands_FromTransactionResolution() {
     const tsSh = ss.getSheetByName(SRC_SHEET);
     const stgSh = ss.getSheetByName(TGT_SHEET);
 
-    if (!tsSh || !stgSh) {
-      throw new Error('Required sheet not found');
-    }
+    if (!tsSh || !stgSh) throw new Error('Required sheet not found');
 
 
     /* --- STEP: LOAD_STAGING --- */
@@ -87,27 +84,22 @@ function populateStagingLookupBrands_FromTransactionResolution() {
     const stgCol = n => stgHdr.indexOf(n);
 
     const IDX_STG = {
-      sourceItemName: stgCol('Source_Item_Name'),
-      sourceProductName: stgCol('Source_Product_Name'),
-
+      sourceTxn: stgCol('Source_Txn_ID_Machine'),
+      stagingId: stgCol('Staging_Brand_ID_Machine'),
+      mappedId: stgCol('Mapped_Brand_ID_Machine'),
       entered: stgCol('Brand_Name_Entered'),
       canon: stgCol('Brand_Name_Canonical'),
       approvedName: stgCol('Brand_Name_Approved'),
-
       adminAction: stgCol('Admin_Action'),
-
       isApproved: stgCol('Is_Approved'),
       isActive: stgCol('Is_Active'),
       isArchived: stgCol('Is_Archived'),
       isPromoted: stgCol('Is_Lookup_Promoted'),
-
       populatedAt: stgCol('Populated_At'),
       notes: stgCol('Notes'),
 
-      stagingId: stgCol('Staging_Brand_ID_Machine'),
-      mappedId: stgCol('Mapped_Brand_ID_Machine'),
-
-      sourceTxn: stgCol('Source_Txn_ID_Machine'),
+      sourceItemName: stgCol('Source_Item_Name'),
+      sourceProductName: stgCol('Source_Product_Name'),  
       sourceItem: stgCol('Source_Item_ID_Machine'),
       sourceProduct: stgCol('Source_Product_ID_Machine')
     };
@@ -137,20 +129,17 @@ function populateStagingLookupBrands_FromTransactionResolution() {
     const IDX = {
       txnId: tsCol('Txn_ID_Machine'),
       itemId: tsCol('Item_ID_Machine'),
-      productId: tsCol('Product_ID_Machine'),
-      brandId: tsCol('Brand_ID_Machine'),
+      brandEntered: tsCol('Brand_Name_Entered'),
+      brandCanon: tsCol('Brand_Name_Canonical'),
 
       itemName: tsCol('Item_Name_Entered'),
       productName: tsCol('Product_Name_Entered'),
-
-      brandEntered: tsCol('Brand_Name_Entered'),
-      brandCanon: tsCol('Brand_Name_Canonical')
+      productId: tsCol('Product_ID_Machine'),
+      brandId: tsCol('Brand_ID_Machine')
     };
 
-    for (const [k, v] of Object.entries(IDX)) {
-      if (v === -1) {
-        throw new Error(`Transaction_Resolution missing column: ${k}`);
-      }
+    for (const [k,v] of Object.entries(IDX)) {
+      if (v === -1) throw new Error(`Transaction_Resolution missing column: ${k}`);
     }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_TXN');
@@ -168,13 +157,12 @@ function populateStagingLookupBrands_FromTransactionResolution() {
     ---------------------------------------------------------
     PROCESS LOOP [STAGE NEW BRANDS]
     --------------------------------------------------------- */
-    ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'STAGE NEW BRANDS');
-
     let scanned = 0;
     let skipNoTxn = 0;
     let skipHasBrand = 0;
     let skipNoCanon = 0;
     let skipDuplicateCanon = 0;
+    let insertedCount = 0;
 
     const rowsToAppend = [];
 
@@ -191,7 +179,7 @@ function populateStagingLookupBrands_FromTransactionResolution() {
       }
 
       // Skip rows already resolved at Brand level
-      if (r[IDX.brandId]) {
+      if (r[IDX.brandId]) { 
         skipHasBrand++;
         continue;
       }
@@ -199,10 +187,7 @@ function populateStagingLookupBrands_FromTransactionResolution() {
       const canon = r[IDX.brandCanon];
 
       // Skip rows without Brand canonical
-      if (!canon) {
-        skipNoCanon++;
-        continue;
-      }
+      if (!canon) { skipNoCanon++; continue; }
 
       // Skip rows already staged (canonical-level dedupe)
       if (stagingCanonSet.has(canon)) {
@@ -212,6 +197,19 @@ function populateStagingLookupBrands_FromTransactionResolution() {
 
       /* --- SCHEDULER CHECK --- */
       if (shouldExitForTimeout_(t0)) {
+
+        if (rowsToAppend.length > 0) {
+          stgSh.getRange(
+            stgSh.getLastRow() + 1,
+            1,
+            rowsToAppend.length,
+            stgHdr.length
+          ).setValues(rowsToAppend);
+
+          rowsToAppend.length = 0;
+
+          flushLogs_();
+        }
         shouldExit = true;
         break;
       }
@@ -219,36 +217,58 @@ function populateStagingLookupBrands_FromTransactionResolution() {
       // Construct staging row
       const row = new Array(stgHdr.length).fill('');
 
-      row[IDX_STG.sourceItemName] = r[IDX.itemName];
-      row[IDX_STG.sourceProductName] = r[IDX.productName];
-
+      row[IDX_STG.sourceTxn] = r[IDX.txnId];
+      row[IDX_STG.stagingId] = Utilities.getUuid();
       row[IDX_STG.entered] = r[IDX.brandEntered];
       row[IDX_STG.canon] = canon;
+      row[IDX_STG.adminAction] = 'Review';  
       row[IDX_STG.approvedName] = '';
-
-      row[IDX_STG.adminAction] = 'Review';
-
       row[IDX_STG.isApproved] = false;
       row[IDX_STG.isActive] = false;
       row[IDX_STG.isArchived] = false;
       row[IDX_STG.isPromoted] = false;
-
-      row[IDX_STG.sourceTxn] = r[IDX.txnId];
-      row[IDX_STG.sourceItem] = r[IDX.itemId];
-      row[IDX_STG.sourceProduct] = r[IDX.productId];
-
-      row[IDX_STG.stagingId] = Utilities.getUuid();
-      row[IDX_STG.mappedId] = '';
-
       row[IDX_STG.populatedAt] = new Date();
       row[IDX_STG.notes] = 'Staged from Transaction_Resolution';
 
+      row[IDX_STG.sourceItemName] = r[IDX.itemName];
+      row[IDX_STG.sourceProductName] = r[IDX.productName];
+      row[IDX_STG.sourceItem] = r[IDX.itemId];
+      row[IDX_STG.sourceProduct] = r[IDX.productId];
+      row[IDX_STG.mappedId] = '';
+
+      // Append to buffer for batch write
       rowsToAppend.push(row);
+      insertedCount++;
       stagingCanonSet.add(canon);
+
+      // Log mutation
+      ETI_log_({
+        scriptName: SCRIPT_NAME,
+        functionName: FUNCTION_NAME,
+        sheetName: TGT_SHEET,
+        level: 'INFO',
+        rowNumber: i + 1,
+        action: 'PROCESS',
+        stepName: 'WRITE_OUTPUT',
+        details: `Txn_ID=${r[IDX.txnId]}, Brand_Canonical=${canon}`
+      });
+
+
+    /* --- PERIODIC FLUSH --- */
+    if (i % 240 === 0 && rowsToAppend.length > 0) {
+      
+      stgSh.getRange(
+        stgSh.getLastRow() + 1,
+        1,
+        rowsToAppend.length,
+        stgHdr.length
+      ).setValues(rowsToAppend);
+
+      rowsToAppend.length = 0;
+      flushLogs_();
     }
-
-    ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'STAGE NEW BRANDS');
-
+  }
+    
 
     /* --- STEP: WRITE_OUTPUT --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_OUTPUT');
@@ -260,7 +280,10 @@ function populateStagingLookupBrands_FromTransactionResolution() {
         rowsToAppend.length,
         stgHdr.length
       ).setValues(rowsToAppend);
-    } else {
+
+      flushLogs_();
+    } 
+    else {
       ETI_logNotice_(
         SCRIPT_NAME,
         FUNCTION_NAME,
@@ -275,12 +298,13 @@ function populateStagingLookupBrands_FromTransactionResolution() {
 
     /* --- SUMMARY --- */
     const durationMs = new Date().getTime() - t0.getTime();
+    const effectiveProcessed = scanned - skipNoTxn - skipHasBrand - skipNoCanon - skipDuplicateCanon;
 
     ETI_logSummary_(
       SCRIPT_NAME,
       FUNCTION_NAME,
       TGT_SHEET,
-      `Scanned=${scanned} | Inserted=${rowsToAppend.length} | ` +
+      `Scanned=${scanned} | Effective=${effectiveProcessed} | Inserted=${insertedCount} | ` +
       `Skipped: NoTxn=${skipNoTxn}, HasBrand=${skipHasBrand}, NoCanon=${skipNoCanon}, Duplicate=${skipDuplicateCanon} | ` +
       `DurationMs=${durationMs}`
     );
@@ -291,14 +315,11 @@ function populateStagingLookupBrands_FromTransactionResolution() {
       return exitAndScheduleContinuation_(
         SCRIPT_NAME,
         FUNCTION_NAME,
-        {
-          pipelineName: getExecutionContext_()?.pipeline_name
-        }
+        { pipelineName: getExecutionContext_()?.pipeline_name }
       );
     }
 
     ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
-
   }
 
 
@@ -307,15 +328,7 @@ function populateStagingLookupBrands_FromTransactionResolution() {
   ERROR BLOCK
   ============================================*/
   catch (err) {
-
-    ETI_logError_(
-      SCRIPT_NAME,
-      FUNCTION_NAME,
-      TGT_SHEET,
-      err,
-      'MAIN'
-    );
-
+    ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, err, 'MAIN');
     throw err;
   }
 
@@ -325,7 +338,6 @@ function populateStagingLookupBrands_FromTransactionResolution() {
   FINALIZATION BLOCK
   ============================================*/
   finally {
-
     flushLogs_();
   }
 }
@@ -383,7 +395,6 @@ FUNCTION: BRAND STATE MACHINE PROCESSOR
  * - Required column missing
  */
 
-
 function processStagingBrands_StateMachine() {
 
   /* --- FUNCTION-LEVEL CONSTANTS & STATE --- */
@@ -393,6 +404,8 @@ function processStagingBrands_StateMachine() {
 
   const t0 = new Date();
   let shouldExit = false;
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
 
 
   /*
@@ -404,9 +417,7 @@ function processStagingBrands_StateMachine() {
     /* --- INITIALIZATION --- */
     ETI_logStart_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET);
 
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
     const stgSh = ss.getSheetByName(SRC_SHEET);
-
     if (!stgSh) throw new Error('Staging_Lookup_Brands sheet missing');
 
 
@@ -448,6 +459,7 @@ function processStagingBrands_StateMachine() {
     /* --- STEP: DRIFT_REPAIR --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'DRIFT_REPAIR');
 
+    let processed = 0;
     let repaired = 0;
     let valid = 0;
     let invalid = 0;
@@ -455,11 +467,11 @@ function processStagingBrands_StateMachine() {
     const timestamp = Utilities.formatDate(
       new Date(),
       Session.getScriptTimeZone(),
-      "EEEE, MMMM d, yyyy 'at' HH:mm:ss"
+      "yyyy-MM-dd HH:mm:ss"
     );
 
 
-    /* 
+    /*
     ---------------------------------------------------------
     PROCESS LOOP [STATE TRANSITION + DRIFT REPAIR]
     --------------------------------------------------------- */
@@ -469,19 +481,23 @@ function processStagingBrands_StateMachine() {
       const admin = row[IDX.adminAction];
       const stagingId = row[IDX.stagingId];
 
-      // Skip rows without Admin_Action
+      // Skip rows without admin intent
       if (!admin) continue;
+
+      processed++;
 
       /* --- SCHEDULER CHECK --- */
       if (shouldExitForTimeout_(t0)) {
+        flushLogs_();
         shouldExit = true;
         break;
       }
 
-      // Map Admin_Action → expected governance state
-      let expected = { approved: false, active: false, archived: false };
+      // Resolve expected state from Admin_Action
+      let expected = { approved:false, active:false, archived:false };
 
-      switch (admin) {
+      // Map Admin_Action → expected governance state
+      switch(admin) {
 
         case 'Review': break;
 
@@ -510,12 +526,24 @@ function processStagingBrands_StateMachine() {
         default:
           invalid++;
           row[IDX.integrity] = 'INVALID_ADMIN_ACTION';
+
+          ETI_log_({
+            scriptName: SCRIPT_NAME,
+            functionName: FUNCTION_NAME,
+            sheetName: SRC_SHEET,
+            level: 'ERROR',
+            rowNumber: i + 1,
+            action: 'PROCESS',
+            stepName: 'DRIFT_REPAIR',
+            details: `Staging_ID=${stagingId}, Invalid Admin_Action=${admin}`
+          });
+
           continue;
       }
 
       let drift = [];
 
-      // Repair drift in governance flags
+      // Repair drift in binary flags
       function repair(idx, expectedVal, name) {
         if (row[idx] !== expectedVal) {
           drift.push(`${name} expected=${expectedVal} found=${row[idx]}`);
@@ -539,23 +567,30 @@ function processStagingBrands_StateMachine() {
 
       if (!validState) {
         row[IDX.integrity] = 'INVALID_STATE';
-        invalid++;
+          invalid++;
+
+        ETI_log_({
+          scriptName: SCRIPT_NAME,
+          functionName: FUNCTION_NAME,
+          sheetName: SRC_SHEET,
+          level: 'ERROR',
+          rowNumber: i + 1,
+          action: 'PROCESS',
+          stepName: 'DRIFT_REPAIR',
+          details: `Staging_ID=${stagingId}, Invalid State`
+        });
+
         continue;
       }
 
-
       /* --- DERIVE GOVERNANCE FIELDS --- */
-
       // Pipeline readiness
-      row[IDX.pipelineReady] =
-        row[IDX.isApproved] && !promoted && validState;
+      row[IDX.pipelineReady] = row[IDX.isApproved] && !promoted && validState;
 
       // Review status
-      row[IDX.actionStatus] =
-        promoted ? 'Promoted' :
-        row[IDX.isApproved] ? 'Pending (Promotion)' :
-        row[IDX.isArchived] ? 'Rejected' :
-        'Pending (Approval)';
+      row[IDX.actionStatus] = promoted ? 'Promoted' :
+      row[IDX.isApproved] ? 'Pending (Promotion)' :
+      row[IDX.isArchived] ? 'Rejected' : 'Pending (Approval)';
 
       // Brand status derivation
       let brandStatus = 'To be Reviewed';
@@ -577,46 +612,37 @@ function processStagingBrands_StateMachine() {
       row[IDX.entityOwner] = promoted ? 'Lookup' : 'Staging';
 
 
-      // Logging + integrity tagging
+      /* --- LOGGING --- */
       if (drift.length > 0) {
 
         repaired++;
 
-        const msg =
-          `Integrity drift repaired: ${drift.join(' | ')} — ${timestamp}`;
-
-        row[IDX.notes] = msg;
         row[IDX.integrity] = 'REPAIRED';
+        row[IDX.notes] = `Drift repaired: ${drift.join(' | ')} - ${timestamp}`;
 
         ETI_log_({
           scriptName: SCRIPT_NAME,
           functionName: FUNCTION_NAME,
           sheetName: SRC_SHEET,
-          level: 'WARN',
+          level: 'INFO',
+          rowNumber: i + 1,
           action: 'PROCESS',
           stepName: 'DRIFT_REPAIR',
-          details: `Row=${i+1}, Staging_ID=${stagingId}, ${drift.join(' | ')}`
+          details: `Staging_ID=${stagingId}, ${drift.join(' | ')}`
         });
 
       } else {
-
         valid++;
 
         row[IDX.integrity] = 'VALID';
-        row[IDX.notes] = `Integrity check passed — ${timestamp}`;
+        row[IDX.notes] = `Integrity check passed - ${timestamp}`;
       }
     }
 
 
     // No-op notice
     if (repaired === 0 && invalid === 0) {
-      ETI_logNotice_(
-        SCRIPT_NAME,
-        FUNCTION_NAME,
-        SRC_SHEET,
-        'DRIFT_REPAIR',
-        'No drift detected'
-      );
+      ETI_logNotice_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'DRIFT_REPAIR', 'No drift detected');
     }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'DRIFT_REPAIR');
@@ -625,8 +651,10 @@ function processStagingBrands_StateMachine() {
     /* --- STEP: WRITE_BACK --- */
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'WRITE_BACK');
 
-    stgSh.getRange(2, 1, data.length - 1, hdr.length)
-      .setValues(data.slice(1));
+    if (data.length > 1) {
+      stgSh.getRange(2, 1, data.length - 1, hdr.length)
+        .setValues(data.slice(1));
+    }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, 'WRITE_BACK');
 
@@ -638,7 +666,7 @@ function processStagingBrands_StateMachine() {
       SCRIPT_NAME,
       FUNCTION_NAME,
       SRC_SHEET,
-      `Valid=${valid}, Repaired=${repaired}, Invalid=${invalid}, DurationMs=${durationMs}`
+      `Processed=${processed} | Valid=${valid} | Repaired=${repaired} | Invalid=${invalid} | DurationMs=${durationMs}`
     );
 
 
@@ -647,14 +675,11 @@ function processStagingBrands_StateMachine() {
       return exitAndScheduleContinuation_(
         SCRIPT_NAME,
         FUNCTION_NAME,
-        {
-          pipelineName: getExecutionContext_()?.pipeline_name
-        }
+        { pipelineName: getExecutionContext_()?.pipeline_name }
       );
     }
 
     ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET);
-
   }
 
 
@@ -663,15 +688,7 @@ function processStagingBrands_StateMachine() {
   ERROR BLOCK
   ============================================*/
   catch (err) {
-
-    ETI_logError_(
-      SCRIPT_NAME,
-      FUNCTION_NAME,
-      SRC_SHEET,
-      err,
-      'MAIN'
-    );
-
+    ETI_logError_(SCRIPT_NAME, FUNCTION_NAME, SRC_SHEET, err, 'MAIN');
     throw err;
   }
 
@@ -681,10 +698,10 @@ function processStagingBrands_StateMachine() {
   FINALIZATION BLOCK
   ============================================*/
   finally {
-
     flushLogs_();
   }
 }
+
 
 
 /* 
@@ -775,17 +792,13 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
     const IDX_LK = {
       brandName: lkCol('Brand_Name'),
       brandCanon: lkCol('Brand_Name_Canonical'),
-
       isApproved: lkCol('Is_Approved'),
       isActive: lkCol('Is_Active'),
       isArchived: lkCol('Is_Archived'),
-
       isStgPromoted: lkCol('Is_Staging_Promoted'),
       sourceType: lkCol('Source_Type'),
-
       createdAt: lkCol('Created_At'),
       notes: lkCol('Notes'),
-
       brandIdMachine: lkCol('Brand_ID_Machine'),
       stagingId: lkCol('Staging_Brand_ID_Machine')
     };
@@ -808,20 +821,15 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
       entered: stgCol('Brand_Name_Entered'),
       approved: stgCol('Brand_Name_Approved'),
       canon: stgCol('Brand_Name_Canonical'),
-
       reviewStatus: stgCol('Action_Review_Status'),
       pipelineReady: stgCol('Is_Pipeline_ready'),
       isPromoted: stgCol('Is_Lookup_Promoted'),
-
       stagingId: stgCol('Staging_Brand_ID_Machine'),
       mappedId: stgCol('Mapped_Brand_ID_Machine'),
-
       notes: stgCol('Notes'),
-
       isApproved: stgCol('Is_Approved'),
       isActive: stgCol('Is_Active'),
       isArchived: stgCol('Is_Archived'),
-
       entityOwner: stgCol('Entity_Owner'),
       promotionLabel: stgCol('Promotion_Label'),
       promotedAt: stgCol('Promoted_At'),
@@ -835,6 +843,7 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_STAGING');
 
 
+    /* --- VALIDATION --- */
     if (stgData.length <= 1) {
       ETI_logSkip_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'No data rows found');
       ETI_logEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET);
@@ -842,12 +851,14 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
     }
 
 
-    /*
+    /* --- STEP: PROMOTION --- */
+    ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'PROMOTION');
+
+
+    /* 
     ---------------------------------------------------------
     PROCESS LOOP [PROMOTE APPROVED BRANDS]
     --------------------------------------------------------- */
-    ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'PROMOTION');
-
     let scanned = 0;
     let promoted = 0;
     let skipped = 0;
@@ -862,17 +873,42 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
       const rowNum = i + 1;
       const r = stgData[i];
 
-      // Eligibility: only rows ready for promotion
+      // Eligibility checks: rows ready for promotion
       if (r[IDX_STG.reviewStatus] !== 'Pending (Promotion)') { skipped++; continue; }
-      if (!r[IDX_STG.pipelineReady]) { skipped++; continue; }
+      if (r[IDX_STG.pipelineReady] !== true) { skipped++; continue; }
       if (r[IDX_STG.isPromoted] === true) { skipped++; continue; }
 
-      // Resolve final Brand name
       const finalName = r[IDX_STG.approved] || r[IDX_STG.entered];
       if (!finalName) { skipped++; continue; }
 
       /* --- SCHEDULER CHECK --- */
       if (shouldExitForTimeout_(t0)) {
+
+        if (lookupAppendRows.length > 0) {
+          lkSh.getRange(
+            lkSh.getLastRow() + 1,
+            1,
+            lookupAppendRows.length,
+            lookupAppendRows[0].length
+          ).setValues(lookupAppendRows);
+          lookupAppendRows.length = 0;
+        }
+
+        if (stagingUpdates.length > 0) {
+          for (const u of stagingUpdates) {
+            stgSh.getRange(u.row, IDX_STG.mappedId + 1).setValue(u.mappedId);
+            stgSh.getRange(u.row, IDX_STG.isPromoted + 1).setValue(true);
+            stgSh.getRange(u.row, IDX_STG.reviewStatus + 1).setValue('Promoted');
+            stgSh.getRange(u.row, IDX_STG.entityOwner + 1).setValue('Lookup');
+            stgSh.getRange(u.row, IDX_STG.promotionLabel + 1).setValue('Promoted');
+            stgSh.getRange(u.row, IDX_STG.promotedAt + 1).setValue(new Date());
+            stgSh.getRange(u.row, IDX_STG.brandStatus + 1).setValue(u.status);
+            stgSh.getRange(u.row, IDX_STG.notes + 1).setValue(u.note);
+          }
+          stagingUpdates.length = 0;
+        }
+
+        flushLogs_();
         shouldExit = true;
         break;
       }
@@ -880,32 +916,25 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
       const canon = r[IDX_STG.canon] || '';
       const stagingId = r[IDX_STG.stagingId];
 
-      // Generate unique Brand_ID_Machine (UUID)
+      // Generate unique Item_ID_Machine (UUID)
       const brandIdMachine = Utilities.getUuid();
 
-      // Construct lookup row
+      // Create lookup row
       const newLookupRow = new Array(lkHdr.length).fill('');
 
       newLookupRow[IDX_LK.brandName] = finalName;
       newLookupRow[IDX_LK.brandCanon] = canon;
-
       newLookupRow[IDX_LK.isApproved] = r[IDX_STG.isApproved];
       newLookupRow[IDX_LK.isActive]   = r[IDX_STG.isActive];
       newLookupRow[IDX_LK.isArchived] = r[IDX_STG.isArchived];
-
       newLookupRow[IDX_LK.isStgPromoted] = true;
       newLookupRow[IDX_LK.sourceType] = 'STAGING_PROMOTION';
-
       newLookupRow[IDX_LK.createdAt] = new Date();
-
       newLookupRow[IDX_LK.brandIdMachine] = brandIdMachine;
       newLookupRow[IDX_LK.stagingId] = stagingId;
-
-      newLookupRow[IDX_LK.notes] =
-        `Promoted from staging → Staging_ID=${stagingId}`;
+      newLookupRow[IDX_LK.notes] = `Promoted from staging → Staging_ID=${stagingId}`;
 
       lookupAppendRows.push(newLookupRow);
-
 
       // Prepare staging update
       let promotedStatus = '';
@@ -930,31 +959,53 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
         status: promotedStatus
       });
 
-
-      // Log promotion event
       ETI_log_({
         scriptName: SCRIPT_NAME,
         functionName: FUNCTION_NAME,
         sheetName: TGT_SHEET,
         level: 'INFO',
+        rowNumber: rowNum,
         action: 'PROCESS',
         stepName: 'PROMOTION',
         details:
-          `Row=${rowNum}, Staging_ID=${stagingId}, Brand_ID=${brandIdMachine}, Brand_Name=${finalName}`
+          `Staging_ID=${stagingId}, Brand_ID=${brandIdMachine}, Brand_Name=${finalName}`
       });
 
       promoted++;
+
+      /* --- PERIODIC FLUSH --- */
+      if (i % 240 === 0) {
+
+        if (lookupAppendRows.length > 0) {
+          lkSh.getRange(
+            lkSh.getLastRow() + 1,
+            1,
+            lookupAppendRows.length,
+            lookupAppendRows[0].length
+          ).setValues(lookupAppendRows);
+          lookupAppendRows.length = 0;
+        }
+
+        if (stagingUpdates.length > 0) {
+          for (const u of stagingUpdates) {
+            stgSh.getRange(u.row, IDX_STG.mappedId + 1).setValue(u.mappedId);
+            stgSh.getRange(u.row, IDX_STG.isPromoted + 1).setValue(true);
+            stgSh.getRange(u.row, IDX_STG.reviewStatus + 1).setValue('Promoted');
+            stgSh.getRange(u.row, IDX_STG.entityOwner + 1).setValue('Lookup');
+            stgSh.getRange(u.row, IDX_STG.promotionLabel + 1).setValue('Promoted');
+            stgSh.getRange(u.row, IDX_STG.promotedAt + 1).setValue(new Date());
+            stgSh.getRange(u.row, IDX_STG.brandStatus + 1).setValue(u.status);
+            stgSh.getRange(u.row, IDX_STG.notes + 1).setValue(u.note);
+          }
+          stagingUpdates.length = 0;
+        }
+
+        flushLogs_();
+      }
     }
 
-    // No-op notice
     if (promoted === 0) {
-      ETI_logNotice_(
-        SCRIPT_NAME,
-        FUNCTION_NAME,
-        TGT_SHEET,
-        'PROMOTION',
-        'No brands eligible for promotion'
-      );
+      ETI_logNotice_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'PROMOTION', 'No brands eligible for promotion');
     }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'PROMOTION');
@@ -970,6 +1021,8 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
         lookupAppendRows.length,
         lookupAppendRows[0].length
       ).setValues(lookupAppendRows);
+
+      flushLogs_();
     }
 
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_LOOKUP');
@@ -989,6 +1042,10 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
       stgSh.getRange(u.row, IDX_STG.notes + 1).setValue(u.note);
     }
 
+    if (stagingUpdates.length > 0) {
+      flushLogs_();
+    }
+
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'WRITE_BACK_STAGING');
 
 
@@ -999,7 +1056,7 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
       SCRIPT_NAME,
       FUNCTION_NAME,
       TGT_SHEET,
-      `Scanned=${scanned}, Promoted=${promoted}, Skipped=${skipped}, DurationMs=${durationMs}`
+      `Scanned=${scanned} | Promoted=${promoted} | Skipped=${skipped} | DurationMs=${durationMs}`
     );
 
 
@@ -1008,9 +1065,7 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
       return exitAndScheduleContinuation_(
         SCRIPT_NAME,
         FUNCTION_NAME,
-        {
-          pipelineName: getExecutionContext_()?.pipeline_name
-        }
+        { pipelineName: getExecutionContext_()?.pipeline_name }
       );
     }
 
@@ -1036,6 +1091,7 @@ function promoteApprovedBrands_FromStaging_ToLookup() {
     flushLogs_();
   }
 }
+
 
 
 /* 

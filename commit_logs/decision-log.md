@@ -299,3 +299,22 @@ apps_script/99_AI_System_Context.gs.js
 **Decision:** NA
 **Next:** NA
 
+
+---
+
+## 2026-05-06 21:06
+
+**Commit Message:** feat(business functions): Standardized and pre-baseline set for staging release
+
+**Files Changed:**
+apps_script/11_Transactions.js
+apps_script/12_Items.js
+apps_script/13_Brands.js
+apps_script/14_Products.js
+apps_script/16_Mapping_Item_Brand_product.js
+
+
+**Problem:** NA
+**Decision:** NA
+**Next:** NA
+

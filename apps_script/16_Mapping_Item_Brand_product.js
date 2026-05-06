@@ -122,6 +122,13 @@ function populateMapping_Item_Brand_Product_FromTransactionResolution() {
       productCanon: txCol('Product_Name_Canonical')
     };
 
+    // Validate required columns
+    for (const [k, v] of Object.entries(IDX_TX)) {
+      if (v === -1) {
+        throw new Error(`Transaction_Resolution missing column: ${k}`);
+      }
+    }
+
     ETI_logStepEnd_(SCRIPT_NAME, FUNCTION_NAME, TGT_SHEET, 'LOAD_TXN');
 
 
@@ -135,10 +142,8 @@ function populateMapping_Item_Brand_Product_FromTransactionResolution() {
 
     /*
     ---------------------------------------------------------
-    PROCESS LOOP
-    ---------------------------------------------------------
-    // Scan transactions → extract unique identity triples
-    */
+    PROCESS LOOP // Scan transactions → extract unique identity triples
+    ---------------------------------------------------------*/
     const firstSeenMap = new Map();
     let scanned = 0;
 
@@ -522,6 +527,7 @@ FUNCTION: ITEM-BRAND-PRODUCT MAPPING CLEANUP
  * - Sheet missing
  * - Column missing
  */
+
 function cleanupMapping_Item_Brand_Product_InvalidRows() {
 
   const SCRIPT_NAME = 'Mapping_Item_Brand_Product';
@@ -551,12 +557,18 @@ function cleanupMapping_Item_Brand_Product_InvalidRows() {
       productCanon: col('Product_Name_Canonical')
     };
 
-    /*
+        /*
     ---------------------------------------------------------
     PROCESS LOOP
-    ---------------------------------------------------------
+    ---------------------------------------------------------*/
+    
     // Identify invalid mapping rows
-    */
+    for (const [k, v] of Object.entries(IDX)) {
+      if (v === -1) {
+        throw new Error(`Missing column: ${k}`);
+      }
+    }
+
     ETI_logStepStart_(SCRIPT_NAME, FUNCTION_NAME, SHEET_NAME, 'CLEANUP');
 
     let removed = 0;

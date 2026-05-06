@@ -264,7 +264,7 @@ function backfillTxnIDs_TransactionRaw() {
 
       /* --- BUFFER: PERIODIC FLUSH CONTROL --- */
       // Write buffered Txn_IDs back to the sheet once batch limit is reached
-      if (i % 200 === 0 && dirtyStart !== null) {
+      if (i % 240 === 0 && dirtyStart !== null) {
 
         const startRow = dirtyStart + 1;
         const numDirtyRows = dirtyEnd - dirtyStart + 1;
