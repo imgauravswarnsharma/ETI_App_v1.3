@@ -3,6 +3,11 @@ node_modules/
 apps_script/.clasp.json  # optional if you don't want scriptId exposed
 .clasp.json
 
+apps_script/Script_Headers.js
+apps_script/Temp.js
+apps_script/Temprory_testing_executor.js
+
+
 # Untracked Files
 temp.txt
 clipboard*.*

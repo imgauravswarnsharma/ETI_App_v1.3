@@ -160,10 +160,10 @@
 /* --- SCHEDULER CONFIG --- */
 
 const ETI_SCHEDULER_CONFIG = {
-  TIME_LIMIT_MS: 1 * 50 * 1000,   // 5 min (max hard limit)
+  TIME_LIMIT_MS: 1 * 295 * 1000,   // 5 min (max hard limit)
   BUFFER_MS: 2000,              // Safety buffer
   TRIGGER_DELAY_MS: 2000,       // Restart delay
-  MAX_RESUME: 3                // Resume Limit
+  MAX_RESUME: 5                // Resume Limit
 };
 
 

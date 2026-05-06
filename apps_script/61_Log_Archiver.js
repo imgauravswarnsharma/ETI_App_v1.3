@@ -15,7 +15,7 @@
  * EXECUTION ENTRY
  * ---------------------------------------------------------
  *
- * Function: runLogArchival_()
+ * Function: runLogArchival()
  *
  * Invocation:
  * - Manual execution OR
@@ -34,7 +34,7 @@
  * EXECUTION FLOW
  * ---------------------------------------------------------
  *
- * runLogArchival_()
+ * runLogArchival()
  *   ├── Validate ENABLE_ARCHIVAL flag
  *   ├── Check execution context
  *   │     └── If active → exit
@@ -181,7 +181,7 @@ const LOG_ARCHIVER_CONFIG = {
 -------------------------------------
 ENTRY POINT (MANUAL / CONTROLLER)
 -------------------------------------*/
-function runLogArchival_(){
+function runLogArchival(){
 
   if (!LOG_ARCHIVER_CONFIG.ENABLE_ARCHIVAL) return;
 
@@ -428,43 +428,45 @@ function findExecutionSafeCutoff_(data, sourceMap){
 Time Based Archiver Trigger
 -------------------------------------
 */
-/*
+
+/* 
 function setup_logArchiverTriggers_() {
 
   // Remove old triggers for this function (clean setup)
   const triggers = ScriptApp.getProjectTriggers();
 
   triggers.forEach(t => {
-    if (t.getHandlerFunction() === 'runLogArchival_') {
+    if (t.getHandlerFunction() === 'runLogArchival') {
       ScriptApp.deleteTrigger(t);
     }
   });
+  */
+  /*
+  -------------------------------------
+  RUN 1 → ~2:00 AM
+  -------------------------------------
+  */
+  
+  /*
+  ScriptApp.newTrigger('runLogArchival')
+    .timeBased()
+    .everyDays(1)
+    .atHour(2)
+    .nearMinute(0)
+    .create();
+    */
 
   /*
   -------------------------------------
-  RUN 1 → ~3:00 AM
-  -------------------------------------
-  */
+  RUN 2 → ~3:00 AM (Final Cleanup)
+  -------------------------------------*/
+
   /*
-  ScriptApp.newTrigger('runLogArchival_')
+  ScriptApp.newTrigger('runLogArchival')
     .timeBased()
     .everyDays(1)
     .atHour(3)
     .nearMinute(0)
     .create();
-
-  /*
-  -------------------------------------
-  RUN 2 → ~4:00 AM
-  -------------------------------------
-  */
-  /*
-  ScriptApp.newTrigger('runLogArchival_')
-    .timeBased()
-    .everyDays(1)
-    .atHour(4)
-    .nearMinute(0)
-    .create();
 }
-
 */
